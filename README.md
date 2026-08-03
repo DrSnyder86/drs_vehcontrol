@@ -299,7 +299,6 @@ drs_vehcontrol/
     img/fob_frames/
     img/icons/
   locales/*.lua
-  tools/generate_fob_frames.js
 ```
 
 ## Troubleshooting
