@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DRS Vehicle Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700;800&family=Michroma&family=Oxanium:wght@500;600;700;800&family=Roboto+Condensed:wght@700;800&family=Yellowtail&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main id="veh-control" class="veh-control" aria-hidden="true">
+        <section class="touchscreen" aria-label="Vehicle control touchscreen" data-locale-aria="ui.vehicleControlAria">
+            <header class="top-strip">
+                <div class="identity">
+                    <span id="plate" class="plate" aria-label="Vehicle plate">
+                        <span class="plate-state" data-locale="ui.sanAndreas">San Andreas</span>
+                        <span id="plate-number" class="plate-number">DRS</span>
+                    </span>
+                    <span id="status" class="status" data-locale="ui.vehicle">Vehicle</span>
+                </div>
+                <div class="metrics">
+                    <span id="vehicle-class" class="class-label">CLASS</span>
+                    <span id="fuel">0% FUEL</span>
+                    <span id="health">0% ENG</span>
+                </div>
+                <div class="window-actions">
+                    <button id="close" class="icon-button" type="button" aria-label="Close controls" data-locale-aria="ui.closeControls">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7 7 17 17M17 7 7 17"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <nav class="tabs" aria-label="Vehicle control categories" data-locale-aria="ui.vehicleTabsAria">
+                <button class="tab active" type="button" data-tab="vehicle" data-locale="ui.tabs.vehicle">VEHICLE</button>
+                <button class="tab" type="button" data-tab="doors" data-locale="ui.tabs.doors">DOORS</button>
+                <button class="tab" type="button" data-tab="windows" data-locale="ui.tabs.windows">WINDOWS</button>
+                <button class="tab" type="button" data-tab="seats" data-locale="ui.tabs.seats">SEATS</button>
+                <button class="tab" type="button" data-tab="utility" data-locale="ui.tabs.utility">UTILITY</button>
+                <button class="tab" type="button" data-tab="settings" data-locale="ui.tabs.settings">SETTINGS</button>
+            </nav>
+
+            <div class="panel-stack">
+                <section class="panel active" data-panel="vehicle">
+                    <div id="vehicle-grid" class="control-grid"></div>
+                </section>
+
+                <section class="panel" data-panel="doors">
+                    <div id="doors-grid" class="control-grid"></div>
+                </section>
+
+                <section class="panel" data-panel="windows">
+                    <div id="windows-grid" class="control-grid"></div>
+                </section>
+
+                <section class="panel" data-panel="seats">
+                    <div id="seats-grid" class="control-grid"></div>
+                </section>
+
+                <section class="panel" data-panel="utility">
+                    <div id="utility-grid" class="control-grid"></div>
+                </section>
+
+                <section id="settings-panel" class="panel settings-panel" data-panel="settings" aria-hidden="true">
+                    <div class="settings-layout">
+                        <div class="settings-row">
+                            <span data-locale="ui.settings.accent">Accent</span>
+                            <div class="swatches" id="accent-swatches">
+                                <button class="swatch" type="button" data-accent="#4fd8ff" style="--swatch: #4fd8ff" aria-label="Cyan" data-locale-aria="ui.settings.swatches.cyan"></button>
+                                <button class="swatch" type="button" data-accent="#ffb02e" style="--swatch: #ffb02e" aria-label="Amber" data-locale-aria="ui.settings.swatches.amber"></button>
+                                <button class="swatch" type="button" data-accent="#35f2a7" style="--swatch: #35f2a7" aria-label="Emerald" data-locale-aria="ui.settings.swatches.emerald"></button>
+                                <button class="swatch" type="button" data-accent="#ff4d5f" style="--swatch: #ff4d5f" aria-label="Red" data-locale-aria="ui.settings.swatches.red"></button>
+                                <button class="swatch" type="button" data-accent="#b77cff" style="--swatch: #b77cff" aria-label="Violet" data-locale-aria="ui.settings.swatches.violet"></button>
+                                <button class="swatch" type="button" data-accent="#f4fbff" style="--swatch: #f4fbff" aria-label="White" data-locale-aria="ui.settings.swatches.white"></button>
+                            </div>
+                        </div>
+                        <label class="settings-row custom-accent">
+                            <span data-locale="ui.settings.custom">Custom</span>
+                            <input id="custom-accent" class="color-input" type="color" value="#4fd8ff" aria-label="Custom accent color" data-locale-aria="ui.settings.customAccentAria">
+                        </label>
+                        <label class="settings-row brightness-row">
+                            <span data-locale="ui.settings.brightness">Brightness</span>
+                            <div class="slider-stack">
+                                <label class="slider-field">
+                                    <span data-locale="ui.settings.uiBrightness">UI</span>
+                                    <input id="ui-brightness" class="range-input" type="range" min="70" max="130" step="1" value="100" aria-label="UI brightness" data-locale-aria="ui.settings.brightnessAria">
+                                </label>
+                                <label class="slider-field">
+                                    <span data-locale="ui.settings.photoOverlay">Photo</span>
+                                    <input id="photo-overlay" class="range-input" type="range" min="35" max="95" step="1" value="82" aria-label="Photo overlay darkness" data-locale-aria="ui.settings.photoOverlayAria">
+                                </label>
+                            </div>
+                        </label>
+                        <div class="settings-row">
+                            <span data-locale="ui.settings.position">Position</span>
+                            <div class="settings-actions">
+                                <button id="move-toggle" class="settings-action" type="button" data-locale="ui.settings.move">Move</button>
+                                <button id="reset-position" class="settings-action" type="button" data-locale="ui.settings.reset">Reset</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </main>
+
+    <main id="key-fob" class="key-fob" aria-hidden="true">
+        <section class="fob-shell" aria-label="Vehicle key fob" data-locale-aria="ui.keyFobAria">
+            <div id="fob-brand" class="fob-brand brand-custom" data-locale="ui.smartKey">SMART KEY</div>
+
+            <div class="fob-screen">
+                <div class="fob-screen-meta">
+                    <span id="fob-time">00:00</span>
+                    <span class="fob-battery" aria-hidden="true"></span>
+                </div>
+                <strong id="fob-status">READY</strong>
+                <span id="fob-vehicle">NO VEHICLE</span>
+                <div class="fob-detail-row">
+                    <span id="fob-plate">---</span>
+                    <span id="fob-range">--M</span>
+                </div>
+            </div>
+
+            <div class="fob-actions">
+                <button class="fob-action" type="button" data-fob-action="lock">
+                    <span class="fob-action-icon" data-icon="lock"></span>
+                    <span id="fob-lock-label">LOCK</span>
+                </button>
+                <button class="fob-action" type="button" data-fob-action="engine">
+                    <span class="fob-action-icon" data-icon="engine"></span>
+                    <span id="fob-engine-label">START</span>
+                </button>
+                <button class="fob-action" type="button" data-fob-action="trunk">
+                    <span class="fob-action-icon" data-icon="trunk"></span>
+                    <span id="fob-trunk-label">TRUNK</span>
+                </button>
+                <button class="fob-action" type="button" data-fob-action="windows">
+                    <span class="fob-action-icon" data-icon="windowsDown"></span>
+                    <span id="fob-windows-label">WINDOWS</span>
+                </button>
+                <button class="fob-action panic" type="button" data-fob-action="panic">
+                    <span id="fob-panic-label">PANIC</span>
+                </button>
+                <button id="fob-move" class="fob-action fob-tool" type="button" aria-label="Move key fob" title="Move key fob" data-locale-aria="ui.fob.move" data-locale-title="ui.fob.move">
+                    <span class="fob-action-icon" data-icon="move"></span>
+                </button>
+                <button id="fob-resize" class="fob-action fob-tool" type="button" aria-label="Resize key fob" title="Resize key fob" data-locale-aria="ui.fob.resize" data-locale-title="ui.fob.resize">
+                    <span class="fob-action-icon" data-icon="resize"></span>
+                </button>
+            </div>
+
+            <button id="fob-back" class="fob-back" type="button" aria-label="Close key fob" data-locale-aria="ui.fob.closeKeyFob">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>
+                </svg>
+            </button>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
