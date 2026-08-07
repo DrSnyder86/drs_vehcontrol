@@ -5,13 +5,14 @@ lua54 'yes'
 
 author 'DrSnyder'
 description 'Modern vehicle touchscreen control panel & keyfob'
-version '1.0.0'
+version '1.1.0'
 
 shared_scripts {
     'config.lua',
     'locales/*.lua'
 }
 client_script 'client/main.lua'
+server_script 'server/main.lua'
 
 ui_page 'html/index.html'
 

@@ -10,6 +10,9 @@ local fobDisplayMessage = ''
 local fobDisplayUntil = 0
 local suppressPauseUntil = 0
 local defaultCloseControls = { 177, 199, 200, 202, 322 }
+local actionCooldowns = {}
+local runtimeKeyCheck = nil
+local vehicleOverrideCache = {}
 
 local function getLocaleData()
     local localeName = Config.Locale or 'en'
@@ -110,8 +113,111 @@ local function getVehicleModelName(vehicle)
     return GetDisplayNameFromVehicleModel(GetEntityModel(vehicle))
 end
 
-local function isEnabled(name)
-    return Config.Controls[name] ~= false
+local function getNetworkSyncConfig()
+    return Config.NetworkSync or {}
+end
+
+local function networkStateEnabled(name)
+    local config = getNetworkSyncConfig()
+    local states = config.States or {}
+
+    return config.Enabled ~= false and states[name] ~= false
+end
+
+local function getVehicleOverride(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return nil
+    end
+
+    local overrides = Config.VehicleOverrides or {}
+    local model = GetEntityModel(vehicle)
+    local modelName = tostring(GetDisplayNameFromVehicleModel(model) or '')
+    local lowerName = modelName:lower()
+    local cached = vehicleOverrideCache[model]
+
+    if cached ~= nil then
+        return cached or nil
+    end
+
+    local override = overrides[model] or overrides[lowerName] or overrides[modelName]
+
+    if not override then
+        for key, value in pairs(overrides) do
+            if type(key) == 'string' and GetHashKey(key) == model then
+                override = value
+                break
+            end
+        end
+    end
+
+    vehicleOverrideCache[model] = override or false
+    return override
+end
+
+local function getOverrideItem(vehicle, section, id)
+    local override = getVehicleOverride(vehicle)
+    local items = override and override[section]
+
+    if type(items) ~= 'table' then
+        return nil
+    end
+
+    local value = items[id]
+    if value == nil then
+        value = items[tostring(id)]
+    end
+
+    return value
+end
+
+local function getOverrideLabel(vehicle, section, id)
+    local override = getVehicleOverride(vehicle)
+    local labels = override and override.Labels
+    local sectionLabels = type(labels) == 'table' and labels[section] or nil
+
+    if type(sectionLabels) ~= 'table' then
+        return nil
+    end
+
+    return sectionLabels[id] or sectionLabels[tostring(id)]
+end
+
+local function isVehicleSupported(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return false
+    end
+
+    local override = getVehicleOverride(vehicle)
+    if override and override.Enabled == false then
+        return false
+    end
+
+    return (Config.RestrictedVehicleClasses or {})[GetVehicleClass(vehicle)] ~= true
+end
+
+local function vehicleHasDoor(vehicle, door)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return false
+    end
+
+    local overrideValue = getOverrideItem(vehicle, 'Doors', door)
+
+    if overrideValue ~= nil then
+        return overrideValue == true
+    end
+
+    return DoesVehicleHaveDoor(vehicle, door)
+end
+
+local function isEnabled(name, vehicle)
+    local override = getVehicleOverride(vehicle)
+    local controls = override and override.Controls
+
+    if type(controls) == 'table' and controls[name] ~= nil then
+        return controls[name] == true
+    end
+
+    return (Config.Controls or {})[name] ~= false
 end
 
 local function getPed()
@@ -142,15 +248,59 @@ end
 
 local function getStoredVehicleState(vehicle)
     local key = getVehicleKey(vehicle)
+    local model = GetEntityModel(vehicle)
+    local plate = normalizePlate(GetVehicleNumberPlateText(vehicle))
+    local cached = vehicleToggles[key]
 
-    vehicleToggles[key] = vehicleToggles[key] or {
+    if cached and cached._entity == vehicle and cached._model == model and cached._plate == plate then
+        return cached
+    end
+
+    local stored = {
+        _entity = vehicle,
+        _model = model,
+        _plate = plate,
         radio = true,
         hazards = false,
         interiorLight = false,
         windows = {}
     }
 
-    return vehicleToggles[key]
+    local networkConfig = getNetworkSyncConfig()
+    if networkConfig.Enabled ~= false and NetworkGetEntityIsNetworked(vehicle) then
+        local synced = Entity(vehicle).state[networkConfig.StateBagName or 'drs_vehcontrol']
+
+        if type(synced) == 'table' then
+            if type(synced.radio) == 'boolean' then
+                stored.radio = synced.radio
+            end
+
+            if type(synced.hazards) == 'boolean' then
+                stored.hazards = synced.hazards
+            end
+
+            if type(synced.interiorLight) == 'boolean' then
+                stored.interiorLight = synced.interiorLight
+            end
+
+            if type(synced.windows) == 'table' then
+                for window = 0, 3 do
+                    local value = synced.windows[window]
+                    if value == nil then
+                        value = synced.windows[tostring(window)]
+                    end
+
+                    if type(value) == 'boolean' then
+                        stored.windows[window] = value
+                    end
+                end
+            end
+        end
+    end
+
+    vehicleToggles[key] = stored
+
+    return stored
 end
 
 local function hasVehicleAccess(vehicle)
@@ -158,8 +308,12 @@ local function hasVehicleAccess(vehicle)
         return false
     end
 
-    local class = GetVehicleClass(vehicle)
-    if Config.RestrictedVehicleClasses[class] then
+    local ped = getPed()
+    if not IsPedInAnyVehicle(ped, false) or GetVehiclePedIsIn(ped, false) ~= vehicle then
+        return false
+    end
+
+    if not isVehicleSupported(vehicle) then
         return false
     end
 
@@ -167,7 +321,7 @@ local function hasVehicleAccess(vehicle)
         return true
     end
 
-    return GetPedInVehicleSeat(vehicle, -1) == getPed()
+    return GetPedInVehicleSeat(vehicle, -1) == ped
 end
 
 local function isDriver(vehicle)
@@ -175,7 +329,7 @@ local function isDriver(vehicle)
 end
 
 local function canUseVehicleControl(vehicle, name)
-    if not isEnabled(name) then
+    if not isEnabled(name, vehicle) then
         return false
     end
 
@@ -194,7 +348,7 @@ end
 local function getEnabledControls(vehicle)
     local controls = {}
 
-    for name in pairs(Config.Controls) do
+    for name in pairs(Config.Controls or {}) do
         controls[name] = canUseVehicleControl(vehicle, name)
     end
 
@@ -218,6 +372,87 @@ local function requestVehicleControl(vehicle)
     until NetworkHasControlOfEntity(vehicle) or GetGameTimer() > timeout
 
     return NetworkHasControlOfEntity(vehicle)
+end
+
+local function syncVehicleState(vehicle, patch)
+    local config = getNetworkSyncConfig()
+
+    if config.Enabled == false or vehicle == 0 or not DoesEntityExist(vehicle) or not NetworkGetEntityIsNetworked(vehicle) or type(patch) ~= 'table' then
+        return false
+    end
+
+    local filtered = {}
+
+    for name, value in pairs(patch) do
+        if networkStateEnabled(name) then
+            filtered[name] = value
+        end
+    end
+
+    if next(filtered) then
+        TriggerServerEvent('drs_vehcontrol:server:setVehicleState', NetworkGetNetworkIdFromEntity(vehicle), filtered)
+        return true
+    end
+
+    return false
+end
+
+local function denyAction(action, reason)
+    local security = Config.ActionSecurity or {}
+
+    if security.PrintDeniedActions == true then
+        print(('[drs_vehcontrol] Denied action %s: %s'):format(tostring(action), tostring(reason)))
+    end
+
+    return false, reason
+end
+
+local function consumeActionCooldown(key, duration)
+    local security = Config.ActionSecurity or {}
+
+    if security.Enabled == false then
+        return true
+    end
+
+    local now = GetGameTimer()
+    if (actionCooldowns[key] or 0) > now then
+        return false
+    end
+
+    actionCooldowns[key] = now + math.max(0, tonumber(duration) or tonumber(security.Cooldown) or 150)
+    return true
+end
+
+local function validateVehicleAction(action, vehicle, controlName)
+    if not hasVehicleAccess(vehicle) then
+        return denyAction(action, 'vehicle_unavailable')
+    end
+
+    if not canUseVehicleControl(vehicle, controlName) then
+        return denyAction(action, 'control_not_allowed')
+    end
+
+    if not consumeActionCooldown('vehicle:' .. tostring(action)) then
+        return denyAction(action, 'cooldown')
+    end
+
+    if not requestVehicleControl(vehicle) then
+        return denyAction(action, 'network_control')
+    end
+
+    return true
+end
+
+local function emitVehicleAction(action, vehicle, details)
+    local payload = {
+        action = action,
+        vehicle = vehicle,
+        netId = NetworkGetEntityIsNetworked(vehicle) and NetworkGetNetworkIdFromEntity(vehicle) or 0,
+        plate = normalizePlate(GetVehicleNumberPlateText(vehicle)),
+        details = details or {}
+    }
+
+    TriggerEvent('drs_vehcontrol:client:action', payload)
 end
 
 local function getKeyFobConfig()
@@ -276,6 +511,15 @@ local function checkKeyProvider(provider, vehicle, plate, modelName)
         end
 
         local ok, allowed = pcall(config.HasKey, vehicle, plate, modelName)
+        return true, ok and allowed == true
+    end
+
+    if provider == 'registered' or provider == 'runtime' then
+        if type(runtimeKeyCheck) ~= 'function' then
+            return true, false
+        end
+
+        local ok, allowed = pcall(runtimeKeyCheck, vehicle, plate, modelName)
         return true, ok and allowed == true
     end
 
@@ -358,8 +602,15 @@ local function hasKeyFobKey(vehicle)
     return config.AllowStandaloneFallback == true
 end
 
-local function keyFobActionEnabled(name)
+local function keyFobActionEnabled(name, vehicle)
     local actions = getKeyFobActions()
+    local override = getVehicleOverride(vehicle)
+    local overrideActions = override and override.FobActions
+
+    if type(overrideActions) == 'table' and overrideActions[name] ~= nil then
+        return overrideActions[name] == true
+    end
+
     return actions[name] ~= false
 end
 
@@ -379,12 +630,13 @@ local function getKeyFobTargetStatus()
         return false, 0, fobMessage('noVehicle')
     end
 
-    if Config.RestrictedVehicleClasses[GetVehicleClass(vehicle)] then
+    if not isVehicleSupported(vehicle) then
         return false, vehicle, fobMessage('unsupported')
     end
 
     local distance = getVehicleDistance(vehicle)
-    local maxDistance = tonumber(config.MaxDistance) or 35.0
+    local override = getVehicleOverride(vehicle)
+    local maxDistance = tonumber(override and override.KeyFobMaxDistance) or tonumber(config.MaxDistance) or 35.0
 
     if not distance or distance > maxDistance then
         return false, vehicle, fobMessage('tooFar')
@@ -617,7 +869,7 @@ local function shouldHandleVehicleExit(vehicle, ped, config)
         return true
     end
 
-    if Config.RestrictedVehicleClasses[GetVehicleClass(vehicle)] then
+    if not isVehicleSupported(vehicle) then
         return false
     end
 
@@ -633,7 +885,7 @@ local function canPreserveEngineForExit(vehicle, ped, config)
         return false
     end
 
-    if Config.RestrictedVehicleClasses[GetVehicleClass(vehicle)] then
+    if not isVehicleSupported(vehicle) then
         return false
     end
 
@@ -792,10 +1044,10 @@ local function getAvailableDoors(vehicle)
     local labels = locale.doors or {}
 
     for door = 0, 5 do
-        if DoesVehicleHaveDoor(vehicle, door) then
+        if vehicleHasDoor(vehicle, door) then
             doors[#doors + 1] = {
                 id = door,
-                label = labels[door] or Config.DoorLabels[door] or L('generic.door', { number = door }, 'Door ' .. door),
+                label = getOverrideLabel(vehicle, 'Doors', door) or labels[door] or Config.DoorLabels[door] or L('generic.door', { number = door }, 'Door ' .. door),
                 active = getDoorState(vehicle, door)
             }
         end
@@ -810,11 +1062,13 @@ local function getAvailableWindows(vehicle)
     local labels = locale.doors or {}
 
     for window = 0, 3 do
-        windows[#windows + 1] = {
-            id = window,
-            label = labels[window] or Config.DoorLabels[window] or L('generic.window', { number = window }, 'Window ' .. window),
-            active = getWindowState(vehicle, window)
-        }
+        if getOverrideItem(vehicle, 'Windows', window) ~= false then
+            windows[#windows + 1] = {
+                id = window,
+                label = getOverrideLabel(vehicle, 'Windows', window) or labels[window] or Config.DoorLabels[window] or L('generic.window', { number = window }, 'Window ' .. window),
+                active = getWindowState(vehicle, window)
+            }
+        end
     end
 
     return windows
@@ -844,16 +1098,29 @@ local function getAvailableSeats(vehicle)
     local playerPed = getPed()
     local model = GetEntityModel(vehicle)
     local maxSeats = GetVehicleModelNumberOfSeats(model) - 2
+    local override = getVehicleOverride(vehicle)
+
+    if override and type(override.Seats) == 'table' then
+        for seat, enabled in pairs(override.Seats) do
+            local numericSeat = tonumber(seat)
+
+            if enabled == true and numericSeat and numericSeat > maxSeats then
+                maxSeats = numericSeat
+            end
+        end
+    end
 
     for seat = -1, maxSeats do
-        local occupant = GetPedInVehicleSeat(vehicle, seat)
+        if getOverrideItem(vehicle, 'Seats', seat) ~= false then
+            local occupant = GetPedInVehicleSeat(vehicle, seat)
 
-        seats[#seats + 1] = {
-            id = seat,
-            label = getSeatLabel(seat),
-            occupied = occupant ~= 0 and occupant ~= playerPed,
-            active = occupant == playerPed
-        }
+            seats[#seats + 1] = {
+                id = seat,
+                label = getOverrideLabel(vehicle, 'Seats', seat) or getSeatLabel(seat),
+                occupied = occupant ~= 0 and occupant ~= playerPed,
+                active = occupant == playerPed
+            }
+        end
     end
 
     return seats
@@ -863,10 +1130,12 @@ local function getAvailableExtras(vehicle)
     local extras = {}
 
     for extra = 1, 14 do
-        if DoesExtraExist(vehicle, extra) then
+        local overrideValue = getOverrideItem(vehicle, 'Extras', extra)
+
+        if overrideValue == true or (overrideValue ~= false and DoesExtraExist(vehicle, extra)) then
             extras[#extras + 1] = {
                 id = extra,
-                label = L('ui.controls.extra', { number = extra }, ('Extra %s'):format(extra)),
+                label = getOverrideLabel(vehicle, 'Extras', extra) or L('ui.controls.extra', { number = extra }, ('Extra %s'):format(extra)),
                 active = IsVehicleExtraTurnedOn(vehicle, extra)
             }
         end
@@ -942,14 +1211,73 @@ end
 
 local function areAllWindowsDown(vehicle)
     local stored = getStoredVehicleState(vehicle)
+    local available = false
 
     for window = 0, 3 do
-        if stored.windows[window] ~= true then
-            return false
+        if getOverrideItem(vehicle, 'Windows', window) ~= false then
+            available = true
+
+            if stored.windows[window] ~= true then
+                return false
+            end
         end
     end
 
+    if not available then
+        return false
+    end
+
     return true
+end
+
+local function applySyncedVehicleState(vehicle, synced)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or type(synced) ~= 'table' then
+        return
+    end
+
+    local stored = getStoredVehicleState(vehicle)
+
+    if type(synced.radio) == 'boolean' and networkStateEnabled('radio') then
+        stored.radio = synced.radio
+        SetVehicleRadioEnabled(vehicle, stored.radio)
+
+        if not stored.radio then
+            SetVehRadioStation(vehicle, 'OFF')
+        end
+    end
+
+    if type(synced.hazards) == 'boolean' and networkStateEnabled('hazards') then
+        stored.hazards = synced.hazards
+
+        if fobPanicVehicle ~= vehicle or fobPanicUntil <= GetGameTimer() then
+            SetVehicleIndicatorLights(vehicle, 0, stored.hazards)
+            SetVehicleIndicatorLights(vehicle, 1, stored.hazards)
+        end
+    end
+
+    if type(synced.interiorLight) == 'boolean' and networkStateEnabled('interiorLight') then
+        stored.interiorLight = synced.interiorLight
+        SetVehicleInteriorlight(vehicle, stored.interiorLight)
+    end
+
+    if type(synced.windows) == 'table' and networkStateEnabled('windows') then
+        for window = 0, 3 do
+            local value = synced.windows[window]
+            if value == nil then
+                value = synced.windows[tostring(window)]
+            end
+
+            if type(value) == 'boolean' and getOverrideItem(vehicle, 'Windows', window) ~= false then
+                stored.windows[window] = value
+
+                if value then
+                    RollDownWindow(vehicle, window)
+                else
+                    RollUpWindow(vehicle, window)
+                end
+            end
+        end
+    end
 end
 
 local function getKeyFobState(message)
@@ -982,6 +1310,7 @@ local function getKeyFobState(message)
     local distance = getVehicleDistance(vehicle) or 0
     local lockStatus = GetVehicleDoorLockStatus(vehicle)
     local identity = getVehicleIdentity(vehicle)
+    local override = getVehicleOverride(vehicle)
 
     state.plate = GetVehicleNumberPlateText(vehicle)
     state.vehicleName = identity.vehicleName
@@ -989,13 +1318,21 @@ local function getKeyFobState(message)
     state.modelName = identity.modelName
     state.vehicleClass = GetVehicleClass(vehicle)
     state.vehicleClassName = getVehicleClassName(state.vehicleClass)
+    state.maxDistance = tonumber(override and override.KeyFobMaxDistance) or tonumber(config.MaxDistance) or 35.0
     state.distance = math.floor(distance + 0.5)
     state.locked = lockStatus == 2 or lockStatus == 3 or lockStatus == 4
     state.engine = GetIsVehicleEngineRunning(vehicle)
-    state.trunk = DoesVehicleHaveDoor(vehicle, 5) and getDoorState(vehicle, 5)
-    state.hasTrunk = DoesVehicleHaveDoor(vehicle, 5)
+    state.trunk = vehicleHasDoor(vehicle, 5) and getDoorState(vehicle, 5)
+    state.hasTrunk = vehicleHasDoor(vehicle, 5)
     state.windowsDown = areAllWindowsDown(vehicle)
     state.panic = fobPanicVehicle == vehicle and fobPanicUntil > GetGameTimer()
+    state.actions = {
+        locks = keyFobActionEnabled('locks', vehicle),
+        engine = keyFobActionEnabled('engine', vehicle),
+        trunk = keyFobActionEnabled('trunk', vehicle),
+        windows = keyFobActionEnabled('windows', vehicle),
+        panic = keyFobActionEnabled('panic', vehicle)
+    }
 
     if fobDisplayUntil <= now and state.panic then
         state.message = fobMessage('panic')
@@ -1078,12 +1415,7 @@ local function sendVehicleStateAfterAction()
     sendVehicleState()
 end
 
-local function toggleUi()
-    if uiOpen then
-        setUiVisible(false)
-        return
-    end
-
+local function openVehicleUi()
     if fobOpen then
         setFobVisible(false)
     end
@@ -1091,24 +1423,29 @@ local function toggleUi()
     local vehicle = getVehicle()
     if not hasVehicleAccess(vehicle) then
         notify(L('notifications.vehicleControlsUnavailable'), 'error')
-        return
+        return false, 'vehicle_unavailable'
     end
 
     setUiVisible(true)
     sendVehicleState()
+    return true
 end
 
-local function toggleKeyFob()
+local function toggleUi()
+    if uiOpen then
+        setUiVisible(false)
+        return
+    end
+
+    openVehicleUi()
+end
+
+local function openKeyFob()
     local config = getKeyFobConfig()
 
     if config.Enabled == false then
         notify(L('notifications.keyFobDisabled'), 'error')
-        return
-    end
-
-    if fobOpen then
-        setFobVisible(false)
-        return
+        return false, 'disabled'
     end
 
     if uiOpen then
@@ -1117,17 +1454,84 @@ local function toggleKeyFob()
 
     if IsPedInAnyVehicle(getPed(), false) then
         notify(L('notifications.useTouchscreenInside'), 'inform')
-        return
+        return false, 'inside_vehicle'
     end
 
     local vehicle = getLastDrivenVehicle()
     if vehicle == 0 then
         notify(L('notifications.noRecentVehicle'), 'error')
-        return
+        return false, 'no_vehicle'
     end
 
     setFobVisible(true)
     sendKeyFobState()
+    return true
+end
+
+local function toggleKeyFob()
+    if fobOpen then
+        setFobVisible(false)
+        return
+    end
+
+    openKeyFob()
+end
+
+local function setLastVehicle(vehicle)
+    vehicle = tonumber(vehicle) or 0
+
+    if vehicle == 0 or not DoesEntityExist(vehicle) or GetEntityType(vehicle) ~= 2 then
+        return false
+    end
+
+    lastDrivenVehicle = vehicle
+    return true
+end
+
+local function getVehicleDiagnostics(vehicle)
+    vehicle = vehicle or getVehicle()
+
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        vehicle = getLastDrivenVehicle()
+    end
+
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return nil
+    end
+
+    local model = GetEntityModel(vehicle)
+    local identity = getVehicleIdentity(vehicle)
+    local networkConfig = getNetworkSyncConfig()
+    local synced = nil
+
+    if NetworkGetEntityIsNetworked(vehicle) then
+        synced = Entity(vehicle).state[networkConfig.StateBagName or 'drs_vehcontrol']
+    end
+
+    return {
+        entity = vehicle,
+        netId = NetworkGetEntityIsNetworked(vehicle) and NetworkGetNetworkIdFromEntity(vehicle) or 0,
+        networked = NetworkGetEntityIsNetworked(vehicle),
+        hasControl = not NetworkGetEntityIsNetworked(vehicle) or NetworkHasControlOfEntity(vehicle),
+        modelHash = model,
+        modelName = getVehicleModelName(vehicle),
+        makeName = identity.makeName,
+        displayName = identity.vehicleName,
+        plate = normalizePlate(GetVehicleNumberPlateText(vehicle)),
+        class = GetVehicleClass(vehicle),
+        className = getVehicleClassName(GetVehicleClass(vehicle)),
+        distance = getVehicleDistance(vehicle),
+        supported = isVehicleSupported(vehicle),
+        driver = isDriver(vehicle),
+        hasOverride = getVehicleOverride(vehicle) ~= nil,
+        hasKey = hasKeyFobKey(vehicle),
+        controls = getEnabledControls(vehicle),
+        doors = getAvailableDoors(vehicle),
+        windows = getAvailableWindows(vehicle),
+        seats = getAvailableSeats(vehicle),
+        extras = getAvailableExtras(vehicle),
+        syncedState = synced
+    }
 end
 
 RegisterCommand(Config.Command, toggleUi, false)
@@ -1137,6 +1541,90 @@ if Config.KeyFob and Config.KeyFob.Enabled ~= false then
     RegisterCommand(Config.KeyFob.Command or 'keyfob', toggleKeyFob, false)
     RegisterKeyMapping(Config.KeyFob.Command or 'keyfob', L('keyMappings.keyFob'), 'keyboard', Config.KeyFob.DefaultKey or 'K')
 end
+
+if Config.Debug and Config.Debug.Enabled == true then
+    RegisterCommand(Config.Debug.Command or 'vehcontroldebug', function()
+        local diagnostics = getVehicleDiagnostics()
+
+        if not diagnostics then
+            print('[drs_vehcontrol] No current or recent vehicle is available for diagnostics.')
+            return
+        end
+
+        print(('[drs_vehcontrol] Vehicle diagnostics: %s'):format(json.encode(diagnostics)))
+    end, false)
+end
+
+exports('Open', openVehicleUi)
+exports('Close', function()
+    if uiOpen then
+        setUiVisible(false)
+    end
+
+    if fobOpen then
+        setFobVisible(false)
+    end
+end)
+exports('Toggle', toggleUi)
+exports('OpenKeyFob', openKeyFob)
+exports('CloseKeyFob', function()
+    if fobOpen then
+        setFobVisible(false)
+    end
+end)
+exports('IsOpen', function()
+    return uiOpen or fobOpen
+end)
+exports('GetOpenState', function()
+    return {
+        touchscreen = uiOpen,
+        keyFob = fobOpen
+    }
+end)
+exports('GetVehicleState', getVehicleState)
+exports('GetKeyFobState', getKeyFobState)
+exports('GetVehicleDiagnostics', getVehicleDiagnostics)
+exports('GetLastVehicle', getLastDrivenVehicle)
+exports('SetLastVehicle', setLastVehicle)
+exports('SetSyncedState', function(vehicle, patch)
+    if getNetworkSyncConfig().Enabled == false or vehicle == 0 or not DoesEntityExist(vehicle) or type(patch) ~= 'table' then
+        return false
+    end
+
+    applySyncedVehicleState(vehicle, patch)
+    return syncVehicleState(vehicle, patch)
+end)
+exports('RegisterKeyCheck', function(callback)
+    if type(callback) ~= 'function' then
+        return false
+    end
+
+    runtimeKeyCheck = callback
+    return true
+end)
+exports('ClearKeyCheck', function()
+    runtimeKeyCheck = nil
+end)
+
+RegisterNetEvent('drs_vehcontrol:client:open', openVehicleUi)
+RegisterNetEvent('drs_vehcontrol:client:close', function()
+    if uiOpen then
+        setUiVisible(false)
+    end
+
+    if fobOpen then
+        setFobVisible(false)
+    end
+end)
+RegisterNetEvent('drs_vehcontrol:client:openKeyFob', openKeyFob)
+RegisterNetEvent('drs_vehcontrol:client:setLastVehicle', function(netId)
+    local vehicle = NetworkGetEntityFromNetworkId(tonumber(netId) or 0)
+    setLastVehicle(vehicle)
+end)
+RegisterNetEvent('drs_vehcontrol:client:debug', function()
+    local diagnostics = getVehicleDiagnostics()
+    print(('[drs_vehcontrol] Vehicle diagnostics: %s'):format(diagnostics and json.encode(diagnostics) or 'no vehicle'))
+end)
 
 RegisterNUICallback('close', function(_, cb)
     if uiOpen then
@@ -1161,22 +1649,26 @@ end)
 
 RegisterNUICallback('toggleEngine', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('engine', vehicle, 'engine')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'engine') and requestVehicleControl(vehicle) then
+    if ok then
         local running = GetIsVehicleEngineRunning(vehicle)
         SetVehicleEngineOn(vehicle, not running, false, true)
+        emitVehicleAction('engine', vehicle, { active = not running, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleLock', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('locks', vehicle, 'locks')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'locks') and requestVehicleControl(vehicle) then
+    if ok then
         local locked = GetVehicleDoorLockStatus(vehicle) >= 2
         SetVehicleDoorsLocked(vehicle, locked and 1 or 2)
+        emitVehicleAction('locks', vehicle, { active = not locked, source = 'touchscreen' })
 
         local plate = GetVehicleNumberPlateText(vehicle)
         notify(L('notifications.vehicleLockChanged', {
@@ -1186,46 +1678,68 @@ RegisterNUICallback('toggleLock', function(_, cb)
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleDoor', function(data, cb)
     local vehicle = getVehicle()
     local door = tonumber(data.id)
+    local ok, reason
 
-    if hasVehicleAccess(vehicle) and door and canUseVehicleControl(vehicle, 'doors') and DoesVehicleHaveDoor(vehicle, door) and requestVehicleControl(vehicle) then
+    if not door or door < 0 or door > 5 or not vehicleHasDoor(vehicle, door) then
+        ok, reason = denyAction('door', 'invalid_door')
+    else
+        ok, reason = validateVehicleAction('door:' .. door, vehicle, 'doors')
+    end
+
+    if ok then
+        local open = not getDoorState(vehicle, door)
+
         if getDoorState(vehicle, door) then
             SetVehicleDoorShut(vehicle, door, false)
         else
             SetVehicleDoorOpen(vehicle, door, false, false)
         end
+
+        emitVehicleAction('door', vehicle, { id = door, active = open, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('closeAllDoors', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('doors:all', vehicle, 'doors')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'doors') and requestVehicleControl(vehicle) then
+    if ok then
         for door = 0, 5 do
-            if DoesVehicleHaveDoor(vehicle, door) then
+            if vehicleHasDoor(vehicle, door) then
                 SetVehicleDoorShut(vehicle, door, false)
             end
         end
+
+        emitVehicleAction('doors', vehicle, { active = false, all = true, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleWindow', function(data, cb)
     local vehicle = getVehicle()
     local window = tonumber(data.id)
+    local ok, reason
 
-    if hasVehicleAccess(vehicle) and window and canUseVehicleControl(vehicle, 'windows') and requestVehicleControl(vehicle) then
+    if not window or window < 0 or window > 3 or getOverrideItem(vehicle, 'Windows', window) == false then
+        ok, reason = denyAction('window', 'invalid_window')
+    else
+        ok, reason = validateVehicleAction('window:' .. window, vehicle, 'windows')
+    end
+
+    if ok then
         local stored = getStoredVehicleState(vehicle)
+        local down = not getWindowState(vehicle, window)
 
         if getWindowState(vehicle, window) then
             RollUpWindow(vehicle, window)
@@ -1234,140 +1748,196 @@ RegisterNUICallback('toggleWindow', function(data, cb)
             RollDownWindow(vehicle, window)
             stored.windows[window] = true
         end
+
+        syncVehicleState(vehicle, { windows = stored.windows })
+        emitVehicleAction('window', vehicle, { id = window, active = down, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('allWindows', function(data, cb)
     local vehicle = getVehicle()
     local down = data.down == true
+    local ok, reason = validateVehicleAction('windows:all', vehicle, 'windows')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'windows') and requestVehicleControl(vehicle) then
+    if ok then
         local stored = getStoredVehicleState(vehicle)
 
         for window = 0, 3 do
-            if down then
-                RollDownWindow(vehicle, window)
-            else
-                RollUpWindow(vehicle, window)
-            end
+            if getOverrideItem(vehicle, 'Windows', window) ~= false then
+                if down then
+                    RollDownWindow(vehicle, window)
+                else
+                    RollUpWindow(vehicle, window)
+                end
 
-            stored.windows[window] = down
+                stored.windows[window] = down
+            end
         end
+
+        syncVehicleState(vehicle, { windows = stored.windows })
+        emitVehicleAction('windows', vehicle, { active = down, all = true, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('switchSeat', function(data, cb)
     local vehicle = getVehicle()
     local seat = tonumber(data.id)
+    local maxSeats = vehicle ~= 0 and GetVehicleModelNumberOfSeats(GetEntityModel(vehicle)) - 2 or -2
+    local forcedSeat = seat and getOverrideItem(vehicle, 'Seats', seat) == true
+    local validSeat = seat and seat >= -1 and (seat <= maxSeats or forcedSeat) and getOverrideItem(vehicle, 'Seats', seat) ~= false
+    local ok, reason
 
-    if hasVehicleAccess(vehicle) and seat and canUseVehicleControl(vehicle, 'seats') and requestVehicleControl(vehicle) then
+    if not validSeat then
+        ok, reason = denyAction('seat', 'invalid_seat')
+    else
+        ok, reason = validateVehicleAction('seat:' .. seat, vehicle, 'seats')
+    end
+
+    if ok then
         local occupant = GetPedInVehicleSeat(vehicle, seat)
 
         if occupant == 0 or occupant == getPed() then
             TaskWarpPedIntoVehicle(getPed(), vehicle, seat)
+            emitVehicleAction('seat', vehicle, { id = seat, source = 'touchscreen' })
         else
+            ok, reason = denyAction('seat', 'seat_occupied')
             notify(L('notifications.seatOccupied'), 'error')
         end
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleRadio', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('radio', vehicle, 'radio')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'radio') and requestVehicleControl(vehicle) then
+    if ok then
         local stored = getStoredVehicleState(vehicle)
         stored.radio = not stored.radio
         SetVehicleRadioEnabled(vehicle, stored.radio)
         setSanAndreasRadioPower(vehicle, stored.radio)
+        syncVehicleState(vehicle, { radio = stored.radio })
 
         if not stored.radio then
             SetVehRadioStation(vehicle, 'OFF')
         end
+
+        emitVehicleAction('radio', vehicle, { active = stored.radio, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleHazards', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('hazards', vehicle, 'hazards')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'hazards') and requestVehicleControl(vehicle) then
+    if ok then
         local stored = getStoredVehicleState(vehicle)
         stored.hazards = not stored.hazards
         SetVehicleIndicatorLights(vehicle, 0, stored.hazards)
         SetVehicleIndicatorLights(vehicle, 1, stored.hazards)
+        syncVehicleState(vehicle, { hazards = stored.hazards })
+        emitVehicleAction('hazards', vehicle, { active = stored.hazards, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleInteriorLight', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('interiorLight', vehicle, 'interiorLight')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'interiorLight') and requestVehicleControl(vehicle) then
+    if ok then
         local stored = getStoredVehicleState(vehicle)
         stored.interiorLight = not stored.interiorLight
         SetVehicleInteriorlight(vehicle, stored.interiorLight)
+        syncVehicleState(vehicle, { interiorLight = stored.interiorLight })
+        emitVehicleAction('interiorLight', vehicle, { active = stored.interiorLight, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('detachTrailer', function(_, cb)
     local vehicle = getVehicle()
+    local ok, reason = validateVehicleAction('trailer', vehicle, 'trailer')
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'trailer') and requestVehicleControl(vehicle) then
+    if ok then
         local attached = hasTrailer(vehicle)
 
         if attached then
             DetachVehicleFromTrailer(vehicle)
+            emitVehicleAction('trailer', vehicle, { active = false, source = 'touchscreen' })
+        else
+            ok, reason = denyAction('trailer', 'no_trailer')
         end
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleRoof', function(_, cb)
     local vehicle = getVehicle()
+    local convertible = vehicle ~= 0 and DoesEntityExist(vehicle) and IsVehicleAConvertible(vehicle, false)
+    local ok, reason
 
-    if hasVehicleAccess(vehicle) and canUseVehicleControl(vehicle, 'roof') and IsVehicleAConvertible(vehicle, false) and requestVehicleControl(vehicle) then
+    if not convertible then
+        ok, reason = denyAction('roof', 'unsupported_roof')
+    else
+        ok, reason = validateVehicleAction('roof', vehicle, 'roof')
+    end
+
+    if ok then
         local state = GetConvertibleRoofState(vehicle)
+        local lowering = state == 0 or state == 3
 
-        if state == 0 or state == 3 then
+        if lowering then
             LowerConvertibleRoof(vehicle, false)
         else
             RaiseConvertibleRoof(vehicle, false)
         end
+
+        emitVehicleAction('roof', vehicle, { active = lowering, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('toggleExtra', function(data, cb)
     local vehicle = getVehicle()
     local extra = tonumber(data.id)
+    local overrideValue = extra and getOverrideItem(vehicle, 'Extras', extra)
+    local validExtra = extra and extra >= 1 and extra <= 14 and (overrideValue == true or (overrideValue ~= false and DoesExtraExist(vehicle, extra)))
+    local ok, reason
 
-    if hasVehicleAccess(vehicle) and extra and canUseVehicleControl(vehicle, 'extras') and DoesExtraExist(vehicle, extra) and requestVehicleControl(vehicle) then
+    if not validExtra then
+        ok, reason = denyAction('extra', 'invalid_extra')
+    else
+        ok, reason = validateVehicleAction('extra:' .. extra, vehicle, 'extras')
+    end
+
+    if ok then
         local enabled = IsVehicleExtraTurnedOn(vehicle, extra)
         SetVehicleExtra(vehicle, extra, enabled and 1 or 0)
+        emitVehicleAction('extra', vehicle, { id = extra, active = not enabled, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
-    cb({ ok = true })
+    cb({ ok = ok, reason = reason })
 end)
 
 RegisterNUICallback('keyFobAction', function(data, cb)
@@ -1381,22 +1951,35 @@ RegisterNUICallback('keyFobAction', function(data, cb)
     }
     local actionName = actionMap[action]
 
-    if not actionName or not keyFobActionEnabled(actionName) then
+    if not actionName then
         sendKeyFobState(fobMessage('disabled'))
-        cb({ ok = false })
+        cb({ ok = false, reason = 'invalid_action' })
         return
     end
 
     local ok, vehicle, status = getKeyFobTargetStatus()
     if not ok then
         sendKeyFobState(status)
-        cb({ ok = false })
+        cb({ ok = false, reason = 'target_unavailable' })
+        return
+    end
+
+    if not keyFobActionEnabled(actionName, vehicle) then
+        sendKeyFobState(fobMessage('disabled'))
+        cb({ ok = false, reason = 'action_disabled' })
+        return
+    end
+
+    local security = Config.ActionSecurity or {}
+    if not consumeActionCooldown('fob:' .. action, security.KeyFobCooldown) then
+        denyAction('fob:' .. action, 'cooldown')
+        cb({ ok = false, reason = 'cooldown' })
         return
     end
 
     if not requestVehicleControl(vehicle) then
         sendKeyFobState(fobMessage('noSignal'))
-        cb({ ok = false })
+        cb({ ok = false, reason = 'network_control' })
         return
     end
 
@@ -1407,6 +1990,22 @@ RegisterNUICallback('keyFobAction', function(data, cb)
     if actionDelay > 0 then
         Wait(actionDelay)
     end
+
+    local stillValid, validatedVehicle, validatedStatus = getKeyFobTargetStatus()
+    if not stillValid or validatedVehicle ~= vehicle or not keyFobActionEnabled(actionName, vehicle) then
+        sendKeyFobState(validatedStatus or fobMessage('noSignal'))
+        cb({ ok = false, reason = 'validation_changed' })
+        return
+    end
+
+    if not requestVehicleControl(vehicle) then
+        sendKeyFobState(fobMessage('noSignal'))
+        cb({ ok = false, reason = 'network_control' })
+        return
+    end
+
+    local details = { source = 'keyfob' }
+    local performed = true
 
     if action == 'lock' then
         local locked = GetVehicleDoorLockStatus(vehicle) >= 2
@@ -1421,6 +2020,8 @@ RegisterNUICallback('keyFobAction', function(data, cb)
             keyFobFeedback(vehicle, 1, tonumber(feedback.LockBeeps) or 1)
             message = fobMessage('locked')
         end
+
+        details.active = not locked
     elseif action == 'engine' then
         local running = GetIsVehicleEngineRunning(vehicle)
 
@@ -1434,8 +2035,11 @@ RegisterNUICallback('keyFobAction', function(data, cb)
         end
 
         keyFobFeedback(vehicle, 2, 0)
+        details.active = not running
     elseif action == 'trunk' then
-        if DoesVehicleHaveDoor(vehicle, 5) then
+        if vehicleHasDoor(vehicle, 5) then
+            local open = not getDoorState(vehicle, 5)
+
             if getDoorState(vehicle, 5) then
                 SetVehicleDoorShut(vehicle, 5, false)
                 message = fobMessage('trunkClosed')
@@ -1445,25 +2049,33 @@ RegisterNUICallback('keyFobAction', function(data, cb)
             end
 
             keyFobFeedback(vehicle, 1, 0)
+            details.active = open
+            details.id = 5
         else
             message = fobMessage('noTrunk')
+            performed = false
         end
     elseif action == 'windows' then
         local stored = getStoredVehicleState(vehicle)
         local down = not areAllWindowsDown(vehicle)
 
         for window = 0, 3 do
-            if down then
-                RollDownWindow(vehicle, window)
-            else
-                RollUpWindow(vehicle, window)
-            end
+            if getOverrideItem(vehicle, 'Windows', window) ~= false then
+                if down then
+                    RollDownWindow(vehicle, window)
+                else
+                    RollUpWindow(vehicle, window)
+                end
 
-            stored.windows[window] = down
+                stored.windows[window] = down
+            end
         end
 
+        syncVehicleState(vehicle, { windows = stored.windows })
         keyFobFeedback(vehicle, 1, 0)
         message = down and fobMessage('windowsDown') or fobMessage('windowsUp')
+        details.active = down
+        details.all = true
     elseif action == 'panic' then
         if fobPanicVehicle == vehicle and fobPanicUntil > GetGameTimer() then
             fobPanicUntil = 0
@@ -1473,16 +2085,22 @@ RegisterNUICallback('keyFobAction', function(data, cb)
             SetVehicleIndicatorLights(vehicle, 1, stored.hazards)
             setVehicleLightsForced(vehicle, false)
             message = fobMessage('panicOff')
+            details.active = false
         else
             fobPanicVehicle = vehicle
             fobPanicUntil = GetGameTimer() + (tonumber(getKeyFobConfig().PanicDuration) or 7000)
             message = fobMessage('panic')
+            details.active = true
         end
+    end
+
+    if performed then
+        emitVehicleAction(actionName, vehicle, details)
     end
 
     Wait(tonumber(Config.ActionRefreshDelay) or 125)
     sendKeyFobState(message)
-    cb({ ok = true })
+    cb({ ok = performed, reason = performed and nil or 'unsupported' })
 end)
 
 CreateThread(function()
@@ -1551,7 +2169,7 @@ CreateThread(function()
         local ped = getPed()
         local vehicle = GetVehiclePedIsIn(ped, false)
 
-        if vehicle ~= 0 and DoesEntityExist(vehicle) and GetPedInVehicleSeat(vehicle, -1) == ped and not Config.RestrictedVehicleClasses[GetVehicleClass(vehicle)] then
+        if vehicle ~= 0 and DoesEntityExist(vehicle) and GetPedInVehicleSeat(vehicle, -1) == ped and isVehicleSupported(vehicle) then
             lastDrivenVehicle = vehicle
         end
 
@@ -1667,6 +2285,32 @@ CreateThread(function()
         end
     end
 end)
+
+if getNetworkSyncConfig().Enabled ~= false and type(AddStateBagChangeHandler) == 'function' then
+    AddStateBagChangeHandler(getNetworkSyncConfig().StateBagName or 'drs_vehcontrol', nil, function(bagName, _, value)
+        if type(value) ~= 'table' or type(GetEntityFromStateBagName) ~= 'function' then
+            return
+        end
+
+        CreateThread(function()
+            local vehicle = 0
+
+            for _ = 1, 10 do
+                vehicle = GetEntityFromStateBagName(bagName)
+
+                if vehicle ~= 0 and DoesEntityExist(vehicle) then
+                    break
+                end
+
+                Wait(50)
+            end
+
+            if vehicle ~= 0 and DoesEntityExist(vehicle) and GetEntityType(vehicle) == 2 then
+                applySyncedVehicleState(vehicle, value)
+            end
+        end)
+    end)
+end
 
 AddEventHandler('onResourceStop', function(resourceName)
     if resourceName ~= GetCurrentResourceName() then

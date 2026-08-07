@@ -14,6 +14,35 @@ Config.RefreshInterval = 350
 Config.ControlRequestTimeout = 850
 Config.ActionRefreshDelay = 125
 
+Config.ActionSecurity = {
+    Enabled = true,
+    Cooldown = 150,
+    KeyFobCooldown = 250,
+    PrintDeniedActions = false
+}
+
+Config.NetworkSync = {
+    Enabled = true,
+    StateBagName = 'drs_vehcontrol',
+    ServerValidationDistance = 50.0,
+    ServerRateLimit = 100,
+    States = {
+        hazards = true,
+        interiorLight = true,
+        radio = true,
+        windows = true
+    },
+    CanUpdate = function(playerId, vehicle, patch)
+        -- Add optional server-side ownership/job validation here.
+        return true
+    end
+}
+
+Config.Debug = {
+    Enabled = false,
+    Command = 'vehcontroldebug'
+}
+
 Config.LeaveEngineRunning = {
     Enabled = true,
     KeepIfEngineWasRunning = true,
@@ -68,7 +97,8 @@ Config.KeyFob = {
     -- Leave RequireKey false for standalone behavior. Set true to gate fob actions through KeyProvider.
     RequireKey = false,
     -- standalone, auto, qb/qb-vehiclekeys, qbx/qbx_vehiclekeys, qs/qs-vehiclekeys, wasabi/wasabi_carlock,
-    -- 0r/0r-vehiclekeys, msk/msk_vehiclekeys, dusa/dusa_vehiclekeys, renewed/Renewed-Vehiclekeys, custom.
+    -- 0r/0r-vehiclekeys, msk/msk_vehiclekeys, dusa/dusa_vehiclekeys, renewed/Renewed-Vehiclekeys,
+    -- registered/runtime (RegisterKeyCheck export), custom.
     KeyProvider = 'standalone',
     AllowStandaloneFallback = false,
     ProviderPriority = {
@@ -168,6 +198,27 @@ Config.RestrictedVehicleClasses = {
     -- [15] = true, -- helicopters
     -- [16] = true, -- planes
     -- [21] = true -- trains
+}
+
+-- Use a lowercase spawn name or model hash as the key. A false availability value hides that item;
+-- true can force custom-model items that FiveM does not detect correctly.
+Config.VehicleOverrides = {
+    -- ['examplecar'] = {
+    --     Enabled = true,
+    --     Controls = { roof = false, extras = false },
+    --     FobActions = { engine = true, trunk = false, windows = true },
+    --     KeyFobMaxDistance = 25.0,
+    --     Doors = { [4] = false, [5] = true },
+    --     Windows = { [2] = false, [3] = false },
+    --     Seats = { [3] = false },
+    --     Extras = { [1] = false },
+    --     Labels = {
+    --         Doors = { [5] = 'Rear Hatch' },
+    --         Windows = {},
+    --         Seats = {},
+    --         Extras = {}
+    --     }
+    -- }
 }
 
 Config.VehicleClassLabels = {

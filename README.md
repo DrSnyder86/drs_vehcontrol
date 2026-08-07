@@ -10,6 +10,7 @@ The resource is standalone by default, with optional compatibility for popular v
 - Keybind and command support for the vehicle menu.
 - Key fob UI for the last driven vehicle when outside the vehicle.
 - Class-matched key fob case styles for performance, luxury, rugged, fleet, tactical, motorcycle, and air/marine vehicles, with trim that follows the player's selected accent color.
+- Manufacturer-specific text styling in the key fob header, with a clean fallback for custom makes.
 - Vehicle make, model, class, fuel, engine health, and San Andreas-style plate display.
 - Cinematic class artwork backgrounds for vehicle classes.
 - Player UI settings saved locally:
@@ -33,6 +34,11 @@ The resource is standalone by default, with optional compatibility for popular v
 - Convertible roof toggle when supported.
 - Vehicle extras toggle.
 - Passenger support with limited controls.
+- Per-model capability, label, fob-action, and range overrides for custom vehicles.
+- Networked hazard, interior-light, radio-power, and window state through state bags.
+- Shared action validation, network-control checks, and configurable cooldowns.
+- Client/server exports and events for resource integrations.
+- Optional vehicle diagnostics command for custom-model troubleshooting.
 - ESC/back closes the UI before opening the pause menu.
 - Driving controls remain usable while the main vehicle menu is open.
 - Walking controls remain usable while the key fob is open.
@@ -217,6 +223,7 @@ Supported provider names:
 - `msk` or `msk_vehiclekeys`
 - `dusa` or `dusa_vehiclekeys`
 - `renewed` or `Renewed-Vehiclekeys`
+- `registered` or `runtime`
 - `custom`
 
 For custom key checks:
@@ -228,6 +235,21 @@ Config.KeyFob.KeyProvider = 'custom'
 Config.KeyFob.HasKey = function(vehicle, plate)
     return true
 end
+```
+
+Set this in `drs_vehcontrol/config.lua`:
+
+```lua
+Config.KeyFob.RequireKey = true
+Config.KeyFob.KeyProvider = 'registered'
+```
+
+Then register the check from another client resource:
+
+```lua
+exports['drs_vehcontrol']:RegisterKeyCheck(function(vehicle, plate, modelName)
+    return true
+end)
 ```
 
 ### Key Fob Interaction Feel
@@ -248,7 +270,7 @@ Config.KeyFob.Interaction = {
 
 ### Restricted Vehicle Classes
 
-The UI is disabled for some classes by default:
+Disable the UI for any unwanted classes:
 
 ```lua
 Config.RestrictedVehicleClasses = {
@@ -261,6 +283,96 @@ Config.RestrictedVehicleClasses = {
 ```
 
 Set a class to `false` or remove it if you want controls available for that class.
+
+### Vehicle Overrides
+
+Use a lowercase spawn name or model hash to correct unusual custom vehicles. `false` hides an item and `true` can force an item that native detection misses.
+
+```lua
+Config.VehicleOverrides = {
+    ['examplecar'] = {
+        Enabled = true,
+        Controls = {
+            roof = false,
+            extras = false
+        },
+        FobActions = {
+            engine = true,
+            trunk = false,
+            windows = true
+        },
+        KeyFobMaxDistance = 25.0,
+        Doors = {
+            [4] = false,
+            [5] = true
+        },
+        Windows = {
+            [2] = false,
+            [3] = false
+        },
+        Seats = {
+            [3] = false
+        },
+        Extras = {
+            [1] = false
+        },
+        Labels = {
+            Doors = { [5] = 'Rear Hatch' },
+            Windows = {},
+            Seats = {},
+            Extras = {}
+        }
+    }
+}
+```
+
+### Network Synchronization
+
+Auxiliary state is synchronized through a server-owned entity state bag. The server sanitizes state names, verifies the network entity and player distance, and rate-limits updates.
+
+```lua
+Config.NetworkSync = {
+    Enabled = true,
+    StateBagName = 'drs_vehcontrol',
+    ServerValidationDistance = 50.0,
+    ServerRateLimit = 100,
+    States = {
+        hazards = true,
+        interiorLight = true,
+        radio = true,
+        windows = true
+    },
+    CanUpdate = function(playerId, vehicle, patch)
+        return true
+    end
+}
+```
+
+Set an individual state to `false` when another resource is its source of truth. `CanUpdate` can add server-side ownership, key, or job validation. Network synchronization requires networked vehicles and a server using OneSync/state bags.
+
+### Action Validation
+
+```lua
+Config.ActionSecurity = {
+    Enabled = true,
+    Cooldown = 150,
+    KeyFobCooldown = 250,
+    PrintDeniedActions = false
+}
+```
+
+`Enabled` controls cooldown enforcement; core seat permissions, entity validation, and network-control checks always remain active. The fob also checks keys, range, model permissions, entity existence, and network control again after its animation delay before performing an action.
+
+### Debug Diagnostics
+
+```lua
+Config.Debug = {
+    Enabled = true,
+    Command = 'vehcontroldebug'
+}
+```
+
+Run `/vehcontroldebug` in or near the last driven vehicle. The F8 console receives model, class, network, key-provider, override, control, door, window, seat, extra, and synchronized-state information.
 
 ## Optional Compatibility
 
@@ -284,11 +396,63 @@ Config.KeyFob.Interaction.UseQboxAudio = true
 
 If Qbox audio is unavailable, the resource falls back to native FiveM sound playback.
 
+## Integration API
+
+### Client Exports
+
+```lua
+exports['drs_vehcontrol']:Open()
+exports['drs_vehcontrol']:Close()
+exports['drs_vehcontrol']:Toggle()
+exports['drs_vehcontrol']:OpenKeyFob()
+exports['drs_vehcontrol']:CloseKeyFob()
+
+local isOpen = exports['drs_vehcontrol']:IsOpen()
+local openState = exports['drs_vehcontrol']:GetOpenState()
+local vehicleState = exports['drs_vehcontrol']:GetVehicleState()
+local fobState = exports['drs_vehcontrol']:GetKeyFobState()
+local diagnostics = exports['drs_vehcontrol']:GetVehicleDiagnostics(vehicle)
+local lastVehicle = exports['drs_vehcontrol']:GetLastVehicle()
+
+exports['drs_vehcontrol']:SetLastVehicle(vehicle)
+exports['drs_vehcontrol']:SetSyncedState(vehicle, { hazards = true })
+exports['drs_vehcontrol']:ClearKeyCheck()
+```
+
+### Client Events
+
+```lua
+TriggerEvent('drs_vehcontrol:client:open')
+TriggerEvent('drs_vehcontrol:client:close')
+TriggerEvent('drs_vehcontrol:client:openKeyFob')
+TriggerEvent('drs_vehcontrol:client:setLastVehicle', netId)
+TriggerEvent('drs_vehcontrol:client:debug')
+
+AddEventHandler('drs_vehcontrol:client:action', function(payload)
+    print(payload.action, payload.vehicle, payload.netId, payload.plate)
+    -- payload.details contains id, active, all, and source where applicable.
+end)
+```
+
+### Server Exports
+
+```lua
+exports['drs_vehcontrol']:SetVehicleState(vehicleOrNetId, {
+    hazards = true,
+    interiorLight = false,
+    radio = true,
+    windows = { [0] = false, [1] = false }
+})
+
+local syncedState = exports['drs_vehcontrol']:GetVehicleState(vehicleOrNetId)
+```
+
 ## File Structure
 
 ```txt
 drs_vehcontrol/
   client/main.lua
+  server/main.lua
   config.lua
   fxmanifest.lua
   html/
@@ -299,6 +463,9 @@ drs_vehcontrol/
     img/fob_frames/
     img/icons/
   locales/*.lua
+  tools/generate_fob_frames.js
+  tools/test_locales.lua
+  tools/test_server_sync.lua
 ```
 
 ## Troubleshooting
@@ -337,6 +504,15 @@ Config.KeyFob.MaxDistance = 35.0
 ### The UI opens but controls do nothing
 
 - Another resource may be immediately overriding the same vehicle state.
+
+### Nearby players do not see synchronized states
+
+- Confirm OneSync and entity state bags are available on the server.
+- Confirm `server/main.lua` is loaded by `fxmanifest.lua`.
+- Check that the state is enabled under `Config.NetworkSync.States`.
+- Make sure `CanUpdate` is not rejecting the player.
+- Increase `ServerValidationDistance` if the configured fob range is larger.
+- Disable the relevant synchronized state when another resource owns it.
 - Check vehicle ownership/key restrictions.
 - Check OneSync/entity control issues if the vehicle is remote or recently spawned.
 - Increase this if control requests are timing out:
