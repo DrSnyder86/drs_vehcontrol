@@ -143,6 +143,32 @@ const classArtwork = {
     22: { tint: 'rgba(183, 124, 255, 0.11)', image: 'img/classes/class_22_open_wheel.png' }
 };
 
+const vehicleClassLabelStyles = {
+    0: 'compacts',
+    1: 'sedans',
+    2: 'suvs',
+    3: 'coupes',
+    4: 'muscle',
+    5: 'sports-classics',
+    6: 'sports',
+    7: 'super',
+    8: 'motorcycles',
+    9: 'off-road',
+    10: 'industrial',
+    11: 'utility',
+    12: 'vans',
+    13: 'cycles',
+    14: 'boats',
+    15: 'helicopters',
+    16: 'planes',
+    17: 'service',
+    18: 'emergency',
+    19: 'military',
+    20: 'commercial',
+    21: 'trains',
+    22: 'open-wheel'
+};
+
 const fobCaseStyles = ['default', 'performance', 'luxury', 'rugged', 'fleet', 'tactical', 'moto', 'aero'];
 const fobCaseByClass = {
     0: 'default',
@@ -290,11 +316,13 @@ function renderFobBrand() {
     const makeKey = toStyleKey(makeName);
     const styleKey = manufacturerStyleMap[makeKey] || 'custom';
     const label = makeName || t('ui.smartKey', 'SMART KEY');
-
-    fobBrand.textContent = label;
-    fobBrand.title = makeName
+    const title = makeName
         ? t('ui.fob.brandTitle', `${makeName} key fob`, { make: makeName })
         : t('ui.fob.customBrandTitle', 'Custom vehicle key fob');
+
+    fobBrand.textContent = label;
+    fobBrand.title = title;
+    fobBrand.setAttribute('aria-label', title);
     fobBrand.className = `fob-brand brand-${styleKey}`;
 
     if (makeKey) {
@@ -496,6 +524,33 @@ function applyVehicleClassArt(classId) {
 
     touchscreen.style.setProperty('--class-art', `url("${art.image}")`);
     touchscreen.style.setProperty('--class-tint', art.tint);
+}
+
+function fitVehicleClassLabel() {
+    vehicleClass.style.fontSize = '';
+
+    const maximumSize = Number.parseFloat(window.getComputedStyle(vehicleClass).fontSize) || 11;
+    const minimumSize = 7.5;
+    let size = maximumSize;
+
+    while (vehicleClass.scrollWidth > vehicleClass.clientWidth && size > minimumSize) {
+        size -= 0.5;
+        vehicleClass.style.fontSize = `${size}px`;
+    }
+}
+
+function applyVehicleClassLabel(classId, label) {
+    const style = vehicleClassLabelStyles[classId] || 'default';
+    const className = `class-label class-label--${style}`;
+
+    if (vehicleClass.className === className && vehicleClass.textContent === label) {
+        return;
+    }
+
+    vehicleClass.className = className;
+    vehicleClass.textContent = label;
+    vehicleClass.title = label;
+    fitVehicleClassLabel();
 }
 
 function applyFobVehicleClassArt(classId) {
@@ -901,7 +956,7 @@ function render() {
     plate.title = `${t('ui.sanAndreas', 'San Andreas')} ${plateText}`;
     statusText.textContent = state.vehicleName || t('ui.vehicle', 'Vehicle');
     statusText.title = state.vehicleName || t('ui.vehicle', 'Vehicle');
-    vehicleClass.textContent = state.vehicleClassName || t('ui.vehicle', 'Vehicle');
+    applyVehicleClassLabel(state.vehicleClass, state.vehicleClassName || t('ui.vehicle', 'Vehicle'));
     fuel.textContent = t('ui.fuel', `${state.fuel || 0}% FUEL`, { value: state.fuel || 0 });
     health.textContent = t('ui.engineHealth', `${state.engineHealth || 0}% ENG`, { value: state.engineHealth || 0 });
     applyVehicleClassArt(state.vehicleClass);
@@ -1011,6 +1066,7 @@ function renderFob() {
     const trunk = fobState.trunk === true;
     const windowsDown = fobState.windowsDown === true;
     const panic = fobState.panic === true;
+    const actions = fobState.actions || {};
 
     fobLockLabel.textContent = locked ? t('ui.fob.unlock', 'UNLOCK') : t('ui.fob.lock', 'LOCK');
     fobEngineLabel.textContent = engine ? t('ui.fob.stop', 'STOP') : t('ui.fob.start', 'START');
@@ -1022,30 +1078,30 @@ function renderFob() {
         label: locked ? t('ui.fob.unlock', 'UNLOCK') : t('ui.fob.lock', 'LOCK'),
         icon: locked ? 'unlock' : 'lock',
         active: locked,
-        disabled: !canUse
+        disabled: !canUse || actions.locks === false
     });
     setFobButton('engine', {
         label: engine ? t('ui.fob.stop', 'STOP') : t('ui.fob.start', 'START'),
         icon: 'engine',
         active: engine,
-        disabled: !canUse
+        disabled: !canUse || actions.engine === false
     });
     setFobButton('trunk', {
         label: trunk ? t('ui.fob.closeAction', 'CLOSE') : t('ui.fob.trunk', 'TRUNK'),
         icon: 'trunk',
         active: trunk,
-        disabled: !canUse || fobState.hasTrunk === false
+        disabled: !canUse || actions.trunk === false || fobState.hasTrunk === false
     });
     setFobButton('windows', {
         label: t('ui.fob.windows', 'WINDOWS'),
         icon: windowsDown ? 'windowsUp' : 'windowsDown',
         active: windowsDown,
-        disabled: !canUse
+        disabled: !canUse || actions.windows === false
     });
     setFobButton('panic', {
         label: t('ui.fob.panic', 'PANIC'),
         active: panic,
-        disabled: !canUse
+        disabled: !canUse || actions.panic === false
     });
 }
 
@@ -1314,6 +1370,7 @@ window.addEventListener('resize', () => {
     settings.position = clampFobPosition(settings.position.x, settings.position.y);
     applyPosition();
     applyFobLayout();
+    fitVehicleClassLabel();
     fitFobStatus();
     fitFobButtonLabels();
     saveSettings();
@@ -1333,6 +1390,7 @@ applyVehicleClassArt('default');
 
 if (document.fonts) {
     document.fonts.ready.then(() => {
+        fitVehicleClassLabel();
         fitFobStatus();
         fitFobButtonLabels();
     });

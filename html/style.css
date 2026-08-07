@@ -233,12 +233,200 @@ button {
 }
 
 .metrics .class-label {
-    min-width: 104px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 112px;
+    min-width: 112px;
+    max-width: 112px;
+    height: 24px;
+    padding: 0;
     color: var(--accent);
     font-family: "Oxanium", "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
     font-weight: 800;
+    line-height: 1;
+    overflow: hidden;
     text-align: left;
     text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.46);
+    text-overflow: clip;
+    white-space: nowrap;
+}
+
+.metrics .class-label--compacts {
+    font-family: "Michroma", "Oxanium", sans-serif;
+    font-size: 8.5px;
+    font-weight: 400;
+    justify-content: center;
+}
+
+.metrics .class-label--sedans {
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-size: 11.5px;
+    font-weight: 700;
+}
+
+.metrics .class-label--suvs {
+    font-family: "Oxanium", sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.metrics .class-label--coupes {
+    font-family: "Michroma", "Oxanium", sans-serif;
+    font-size: 9px;
+    font-style: italic;
+    font-weight: 400;
+}
+
+.metrics .class-label--muscle {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--sports-classics {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 11px;
+    font-style: italic;
+    font-weight: 700;
+    justify-content: center;
+    text-transform: none;
+}
+
+.metrics .class-label--sports {
+    font-family: "Oxanium", sans-serif;
+    font-size: 12px;
+    font-style: italic;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--super {
+    font-family: "Michroma", "Oxanium", sans-serif;
+    font-size: 9px;
+    font-weight: 400;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--motorcycles {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 11px;
+    font-style: italic;
+    font-weight: 800;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--off-road {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 11.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--industrial {
+    font-family: "Oxanium", sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    -webkit-text-stroke: 0.25px var(--accent);
+}
+
+.metrics .class-label--utility {
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.metrics .class-label--vans {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--cycles {
+    font-family: "Michroma", "Oxanium", sans-serif;
+    font-size: 8.5px;
+    font-weight: 400;
+    justify-content: center;
+}
+
+.metrics .class-label--boats {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 12px;
+    font-style: italic;
+    font-weight: 700;
+    justify-content: center;
+    text-transform: none;
+}
+
+.metrics .class-label--helicopters {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 10.5px;
+    font-weight: 800;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--planes {
+    font-family: "Michroma", "Oxanium", sans-serif;
+    font-size: 8.5px;
+    font-weight: 400;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--service {
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--emergency {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+    justify-content: center;
+    text-transform: uppercase;
+    text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.85);
+}
+
+.metrics .class-label--military {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    -webkit-text-stroke: 0.35px var(--accent);
+}
+
+.metrics .class-label--commercial {
+    font-family: "Oxanium", sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--trains {
+    font-family: "Roboto Condensed", "Arial Narrow", sans-serif;
+    font-size: 11px;
+    font-weight: 800;
+    justify-content: center;
+    text-transform: uppercase;
+}
+
+.metrics .class-label--open-wheel {
+    font-family: "Oxanium", sans-serif;
+    font-size: 10px;
+    font-style: italic;
+    font-weight: 800;
+    text-transform: uppercase;
 }
 
 .window-actions {
@@ -895,6 +1083,7 @@ button {
     content: "";
     width: 16px;
     height: 1px;
+    flex: 0 1 16px;
     margin: 0 7px;
     background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.42));
     box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.24);
