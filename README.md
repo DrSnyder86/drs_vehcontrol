@@ -9,17 +9,18 @@ The resource is standalone by default, with optional compatibility for popular v
 - Compact bottom-screen touchscreen UI.
 - Keybind and command support for the vehicle menu.
 - Key fob UI for the last driven vehicle when outside the vehicle.
-- Class-matched key fob case styles for performance, luxury, rugged, fleet, tactical, motorcycle, and air/marine vehicles, with trim that follows the player's selected accent color.
+- Supersampled class-matched key fob cases for performance, luxury, rugged, fleet, tactical, motorcycle, and air/marine vehicles, with smooth accent trim that follows the player's selected color.
 - Manufacturer-specific text styling in the key fob header, with a clean fallback for custom makes.
 - Vehicle make, model, class, fuel, engine health, and San Andreas-style plate display.
 - Cinematic class artwork backgrounds for vehicle classes.
+- One optional supersampled touchscreen bezel with an accent mask that follows the player's selected color.
 - Player UI settings saved locally:
   - Accent color presets.
   - Custom accent color.
   - UI brightness.
   - Photo overlay darkness for both the main UI and key fob LCD.
-  - Moveable main UI.
-  - Moveable and resizable key fob.
+  - Moveable main UI with 65-100% scaling.
+  - Moveable key fob with 62-116% scaling.
 - Engine start/stop.
 - Lock/unlock.
 - Individual doors.
@@ -30,17 +31,20 @@ The resource is standalone by default, with optional compatibility for popular v
 - Radio on/off.
 - Hazard lights.
 - Interior light.
+- Driver-only cruise control with configurable speed limits, safety cancellation, and optional QB/Qbox cruise-resource conflict detection.
+- Boat anchor toggle that holds position when the current location is safe and the boat is below the configured speed limit.
+- Retractable landing-gear control for supported planes and helicopters.
 - Trailer detach when a trailer is attached.
 - Convertible roof toggle when supported.
 - Vehicle extras toggle.
 - Passenger support with limited controls.
 - Per-model capability, label, fob-action, and range overrides for custom vehicles.
-- Networked hazard, interior-light, radio-power, and window state through state bags.
+- Networked anchor, hazard, interior-light, radio-power, and window state through state bags.
 - Shared action validation, network-control checks, and configurable cooldowns.
 - Client/server exports and events for resource integrations.
 - Optional vehicle diagnostics command for custom-model troubleshooting.
 - ESC/back closes the UI before opening the pause menu.
-- Driving controls remain usable while the main vehicle menu is open.
+- Driving and aircraft flight controls remain usable while the main vehicle menu is open.
 - Walking controls remain usable while the key fob is open.
 - Optional engine leave-running behavior:
   - Keep engine running when exiting if it was already running.
@@ -113,6 +117,16 @@ Config.KeyFob.DefaultKey = 'K'
 
 Supported locale codes are `en` (English), `cs` (Czech), `de` (German), `es` (Spanish), `fr` (French), `nl` (Dutch), `pt-br` (Brazilian Portuguese), and `tr` (Turkish).
 
+### Touchscreen Frame
+
+```lua
+Config.InterfaceFrame = {
+    Enabled = true
+}
+```
+
+When enabled, the touchscreen uses `html/img/touchscreen_frames/touchscreen_default.png` with `touchscreen_default_accent.png` as its colorable accent mask. Both assets are rendered with supersampled edges for smooth curves and diagonals. Set `Enabled = false` to use the compact frameless layout. Custom replacements should remain `1440x480` and preserve the transparent screen opening.
+
 ### Passenger Controls
 
 Passengers are allowed by default, but only for configured controls:
@@ -141,6 +155,9 @@ Config.Controls = {
     radio = true,
     hazards = true,
     interiorLight = true,
+    cruise = true,
+    anchor = true,
+    landingGear = true,
     trailer = true,
     roof = true,
     extras = true
@@ -148,6 +165,68 @@ Config.Controls = {
 ```
 
 Headlight and turn signal controls are intentionally not included.
+
+### Boat Anchor
+
+```lua
+Config.BoatAnchor = {
+    MaxSpeedMph = 10.0
+}
+```
+
+The anchor can only be lowered while the boat is moving below this speed. Raising the anchor is always allowed.
+
+### Cruise Control
+
+```lua
+Config.CruiseControl = {
+    MinSpeedMph = 20.0,
+    MaxSpeedMph = 120.0,
+    HoldOffsetMph = 0.25,
+    HoldVariationMph = 1.0,
+    HoldVariationPeriodMs = 8000,
+    CorrectionToleranceMph = 0.05,
+    OverspeedAllowanceMph = 0.75,
+    SpeedCorrection = true,
+    PauseCorrectionWhileSteering = true,
+    UseSpeedLimiter = true,
+    DamageCancelThreshold = 75.0,
+    ExternalResourceCheck = {
+        Enabled = false,
+        CacheMs = 1000,
+        Resources = {
+            'qbx_smallresources',
+            'qb-smallresources'
+        }
+    },
+    AllowedClasses = {
+        [0] = true,
+        [1] = true,
+        [2] = true,
+        [3] = true,
+        [4] = true,
+        [5] = true,
+        [6] = true,
+        [7] = true,
+        [9] = true,
+        [10] = true,
+        [11] = true,
+        [12] = true,
+        [17] = true,
+        [20] = true
+    }
+}
+```
+
+Cruise stores the current forward speed. Brake, handbrake, reverse, engine shutdown, leaving the driver seat, changing vehicles, unsupported controls, and significant vehicle damage cancel it. Pressing the accelerator temporarily restores the vehicle's normal maximum speed; releasing it returns to the cruise target. Cruise is client-owned and is not synchronized to other players.
+
+Cruise uses the reliable per-frame grounded forward-speed correction found in Qbox-style implementations. Instead of maintaining one mathematically exact speed, its internal hold target moves slowly between `HoldOffsetMph` and `HoldOffsetMph + HoldVariationMph` below the displayed set point. `HoldVariationPeriodMs` controls how quickly that subtle variation cycles.
+
+`CorrectionToleranceMph` prevents tiny sub-pixel corrections, while `OverspeedAllowanceMph` permits a little natural downhill gain. Corrections pause while steering by default and only run while all wheels are grounded.
+
+Set `SpeedCorrection = false` if another handling resource should own vehicle velocity. Set `UseSpeedLimiter = false` if another resource owns `SetVehicleMaxSpeed`.
+
+Set `ExternalResourceCheck.Enabled = true` on Qbox or QBCore servers where another resource owns cruise control. While any configured resource is started, the touchscreen cruise button is hidden and an active `drs_vehcontrol` cruise session is cancelled cleanly. The defaults recognize the stock `qbx_smallresources` and `qb-smallresources` cruise implementations; add renamed or custom cruise resource names to `Resources` as needed. This is a resource-ownership check because those stock implementations do not expose their active cruise state.
 
 ### Leave Engine Running
 
@@ -293,6 +372,9 @@ Config.VehicleOverrides = {
     ['examplecar'] = {
         Enabled = true,
         Controls = {
+            cruise = true,
+            anchor = false,
+            landingGear = false,
             roof = false,
             extras = false
         },
@@ -337,6 +419,7 @@ Config.NetworkSync = {
     ServerValidationDistance = 50.0,
     ServerRateLimit = 100,
     States = {
+        anchor = true,
         hazards = true,
         interiorLight = true,
         radio = true,
@@ -461,11 +544,9 @@ drs_vehcontrol/
     style.css
     img/classes/
     img/fob_frames/
+    img/touchscreen_frames/
     img/icons/
   locales/*.lua
-  tools/generate_fob_frames.js
-  tools/test_locales.lua
-  tools/test_server_sync.lua
 ```
 
 ## Troubleshooting
@@ -539,6 +620,12 @@ Open the Settings tab in the vehicle UI:
 
 - Use `Brightness` > `UI` for overall UI brightness.
 - Use `Brightness` > `Photo` for the class artwork overlay darkness.
+
+### The touchscreen or key fob is too large
+
+- Open the touchscreen Settings tab and use `Position` > `Size` to scale the complete main UI from 65% to 100%.
+- Use the resize icon beside the fob panic button to cycle through fob sizes from 116% down to 62%.
+- Both sizes and positions are saved locally for each player.
 
 ### Icons or class artwork are missing
 

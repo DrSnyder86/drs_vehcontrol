@@ -27,6 +27,7 @@ Config.NetworkSync = {
     ServerValidationDistance = 50.0,
     ServerRateLimit = 100,
     States = {
+        anchor = true,
         hazards = true,
         interiorLight = true,
         radio = true,
@@ -61,6 +62,10 @@ Config.Theme = {
     warning = '#ffb02e'
 }
 
+Config.InterfaceFrame = {
+    Enabled = true
+}
+
 Config.Notifications = {
     -- standalone = GTA feed, qb = QBCore, qbx = Qbox, ox/ox_lib = ox_lib, auto = qbx/qb/ox when started, custom = use CustomNotify below.
     Provider = 'standalone',
@@ -85,7 +90,7 @@ Config.KeyFob = {
     KeepInput = true,
     AllowedControls = {
         21, -- sprint
-        22, -- jump
+        -- 22, -- jump
         30, -- move left/right
         31, -- move forward/back
         32, -- move forward
@@ -161,7 +166,20 @@ Config.AllowedControlsWhileOpen = {
     64, -- vehicle right
     71, -- accelerate
     72, -- brake/reverse
-    76 -- handbrake
+    -- 76, -- handbrake
+    87, -- aircraft throttle up
+    88, -- aircraft throttle down
+    89, -- aircraft yaw left
+    90, -- aircraft yaw right
+    107, -- aircraft roll analog
+    108, -- aircraft roll left
+    109, -- aircraft roll right
+    110, -- aircraft pitch analog
+    111, -- aircraft pitch up
+    112, -- aircraft pitch down
+    113, -- aircraft landing gear
+    119, -- aircraft vertical flight mode
+    352 -- aircraft boost
 }
 
 Config.CloseControls = {
@@ -181,9 +199,66 @@ Config.Controls = {
     radio = true,
     hazards = true,
     interiorLight = true,
+    cruise = true,
+    anchor = true,
+    landingGear = true,
     trailer = true,
     roof = true,
     extras = true
+}
+
+Config.BoatAnchor = {
+    MaxSpeedMph = 10.0
+}
+
+Config.CruiseControl = {
+    MinSpeedMph = 20.0,
+    MaxSpeedMph = 120.0,
+    -- The maintained speed moves slowly below the set point instead of staying mathematically exact.
+    HoldOffsetMph = 0.25,
+    HoldVariationMph = 1.0,
+    HoldVariationPeriodMs = 8000,
+    CorrectionToleranceMph = 0.05,
+    OverspeedAllowanceMph = 0.75,
+    SpeedCorrection = true,
+    PauseCorrectionWhileSteering = true,
+    UseSpeedLimiter = true,
+    DamageCancelThreshold = 75.0,
+    -- When enabled, drs_vehcontrol yields cruise ownership while any listed resource is started.
+    -- Add renamed or custom QB/Qbox cruise resources to this list.
+    ExternalResourceCheck = {
+        Enabled = false,
+        CacheMs = 1000,
+        Resources = {
+            'qbx_smallresources',
+            'qb-smallresources'
+        }
+    },
+    AllowedClasses = {
+        [0] = true, -- compacts
+        [1] = true, -- sedans
+        [2] = true, -- SUVs
+        [3] = true, -- coupes
+        [4] = true, -- muscle
+        [5] = true, -- sports classics
+        [6] = true, -- sports
+        [7] = true, -- super
+        [8] = true, -- motor
+        [9] = true, -- off-road
+        [10] = true, -- industrial
+        [11] = true, -- utility
+        [12] = true, -- vans
+        [13] = true, -- cycle
+        [14] = true, -- boats
+        [15] = true, -- helicopters
+        [16] = true, -- planes
+        [17] = true, -- service
+        [18] = true, -- emergency
+        [19] = true, -- military
+        [20] = true, -- commercial
+        [21] = true, -- trains
+        [22] = true, -- opem wheel
+    }
 }
 
 Config.PassengerControls = {
@@ -205,7 +280,7 @@ Config.RestrictedVehicleClasses = {
 Config.VehicleOverrides = {
     -- ['examplecar'] = {
     --     Enabled = true,
-    --     Controls = { roof = false, extras = false },
+    --     Controls = { cruise = true, anchor = false, landingGear = false, roof = false, extras = false },
     --     FobActions = { engine = true, trunk = false, windows = true },
     --     KeyFobMaxDistance = 25.0,
     --     Doors = { [4] = false, [5] = true },

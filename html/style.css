@@ -17,6 +17,7 @@
     --fob-offset-x: 0px;
     --fob-offset-y: 0px;
     --fob-scale: 1;
+    --ui-scale: 1;
     --ui-brightness: 1;
     --photo-edge-alpha: 0.82;
     --photo-center-alpha: 0.5;
@@ -65,13 +66,82 @@ button {
     opacity: 1;
 }
 
-.touchscreen {
+.touchscreen-shell {
+    --touchscreen-frame-image: url("img/touchscreen_frames/touchscreen_default.png");
+    --touchscreen-frame-accent-mask: url("img/touchscreen_frames/touchscreen_default_accent.png");
+    --touchscreen-frame-inset: 10px;
+    --touchscreen-screen-radius: 7px;
+    --touchscreen-screen-clip: inset(0 round 7px);
+    --touchscreen-frame-shadow:
+        drop-shadow(0 7px 11px rgba(0, 0, 0, 0.5))
+        drop-shadow(0 0 3px rgba(171, 187, 192, 0.08));
     position: relative;
+    width: min(720px, calc(100vw - 12px));
+    height: 240px;
+    pointer-events: none;
+    transform: translate(var(--menu-offset-x), calc(var(--menu-offset-y) + 22px)) scale(var(--ui-scale));
+    transform-origin: center bottom;
+    transition: transform 160ms ease;
+    filter: brightness(var(--ui-brightness)) var(--touchscreen-frame-shadow);
+}
+
+.touchscreen-shell::before,
+.touchscreen-shell::after {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    inset: 0;
+    pointer-events: none;
+}
+
+.touchscreen-shell::before {
+    background: var(--touchscreen-frame-image) center / 100% 100% no-repeat;
+}
+
+.touchscreen-shell::after {
+    background: var(--accent);
+    -webkit-mask-image: var(--touchscreen-frame-accent-mask);
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: 100% 100%;
+    mask-image: var(--touchscreen-frame-accent-mask);
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mask-size: 100% 100%;
+    opacity: 0.9;
+    filter:
+        drop-shadow(0 0 2px rgba(var(--accent-rgb), 0.42))
+        drop-shadow(0 0 5px rgba(var(--accent-rgb), 0.16));
+}
+
+.veh-control.visible .touchscreen-shell {
+    transform: translate(var(--menu-offset-x), var(--menu-offset-y)) scale(var(--ui-scale));
+}
+
+.touchscreen-shell.frame-disabled {
+    --touchscreen-frame-inset: 0px;
+    --touchscreen-screen-radius: 8px;
+    --touchscreen-screen-clip: inset(0 round 8px);
+    --touchscreen-frame-shadow: drop-shadow(0 0 0 transparent);
     width: min(700px, calc(100vw - 36px));
     height: 220px;
+}
+
+.touchscreen-shell.frame-disabled::before,
+.touchscreen-shell.frame-disabled::after {
+    content: none;
+}
+
+.touchscreen {
+    position: absolute;
+    z-index: 1;
+    left: var(--touchscreen-frame-inset);
+    top: var(--touchscreen-frame-inset);
+    width: calc(100% - (var(--touchscreen-frame-inset) * 2));
+    height: 220px;
     padding: 13px;
-    border: 1px solid rgba(var(--accent-rgb), 0.34);
-    border-radius: 8px;
+    border: 0;
+    border-radius: var(--touchscreen-screen-radius);
     background:
         linear-gradient(115deg, var(--class-tint), transparent 54%),
         linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 36%),
@@ -80,11 +150,23 @@ button {
     box-shadow:
         0 0 24px rgba(var(--accent-rgb), 0.18),
         inset 0 0 0 1px rgba(255, 255, 255, 0.045);
-    pointer-events: auto;
-    transform: translate(var(--menu-offset-x), calc(var(--menu-offset-y) + 22px));
-    transition: transform 160ms ease;
+    pointer-events: none;
     overflow: hidden;
-    filter: brightness(var(--ui-brightness));
+}
+
+.veh-control.visible .touchscreen {
+    pointer-events: auto;
+}
+
+.touchscreen-shell:not(.frame-disabled) .touchscreen {
+    clip-path: var(--touchscreen-screen-clip);
+    box-shadow:
+        inset 0 0 0 2px rgba(0, 0, 0, 0.9),
+        inset 0 0 20px rgba(0, 0, 0, 0.46);
+}
+
+.touchscreen-shell.frame-disabled .touchscreen {
+    border: 1px solid rgba(var(--accent-rgb), 0.34);
 }
 
 .touchscreen::before {
@@ -103,18 +185,34 @@ button {
     pointer-events: none;
 }
 
+.touchscreen::after {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    border-radius: inherit;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 18%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.018), transparent 14%, transparent 86%, rgba(255, 255, 255, 0.018));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.04),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.7);
+    pointer-events: none;
+}
+
 .touchscreen > * {
     position: relative;
     z-index: 1;
 }
 
-.veh-control.visible .touchscreen {
-    transform: translate(var(--menu-offset-x), var(--menu-offset-y));
-}
-
 .veh-control.move-mode .touchscreen {
     border-style: dashed;
     cursor: move;
+}
+
+.veh-control.move-mode .touchscreen-shell:not(.frame-disabled) .touchscreen {
+    outline: 1px dashed rgba(var(--accent-rgb), 0.76);
+    outline-offset: -3px;
 }
 
 .top-strip {
@@ -600,6 +698,19 @@ button {
     max-width: 134px;
 }
 
+.position-settings {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    max-width: 142px;
+}
+
+.position-settings .slider-field {
+    grid-template-columns: 44px minmax(0, 1fr);
+}
+
 .slider-field {
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr);
@@ -937,6 +1048,10 @@ button {
     color: var(--text);
     filter: brightness(var(--ui-brightness)) var(--fob-frame-shadow);
     overflow: hidden;
+    pointer-events: none;
+}
+
+.key-fob.visible .fob-shell {
     pointer-events: auto;
 }
 
@@ -1240,12 +1355,11 @@ button {
     background:
         linear-gradient(180deg, rgba(2, 6, 9, var(--fob-photo-top-alpha)), rgba(2, 6, 9, var(--fob-photo-bottom-alpha))),
         linear-gradient(115deg, var(--fob-class-tint), transparent 62%),
-        linear-gradient(155deg, rgba(255, 255, 255, 0.13), transparent 42%),
         var(--fob-class-art),
         linear-gradient(180deg, rgba(4, 13, 18, var(--fob-photo-base-top-alpha)), rgba(2, 6, 9, var(--fob-photo-base-bottom-alpha)));
-    background-position: center, center, center, center, center;
+    background-position: center, center, center, center;
     background-repeat: no-repeat;
-    background-size: auto, auto, auto, cover, auto;
+    background-size: auto, auto, cover, auto;
     box-shadow:
         inset 0 0 18px rgba(var(--accent-rgb), 0.08),
         0 0 18px rgba(0, 0, 0, 0.24);
@@ -1468,8 +1582,17 @@ button {
         padding-bottom: 1.4vh;
     }
 
-    .touchscreen {
+    .touchscreen-shell {
+        width: calc(100vw - 8px);
+        height: 238px;
+    }
+
+    .touchscreen-shell.frame-disabled {
         width: calc(100vw - 18px);
+        height: 218px;
+    }
+
+    .touchscreen {
         height: 218px;
         padding: 10px;
     }

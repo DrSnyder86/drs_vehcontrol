@@ -13,6 +13,16 @@ local defaultCloseControls = { 177, 199, 200, 202, 322 }
 local actionCooldowns = {}
 local runtimeKeyCheck = nil
 local vehicleOverrideCache = {}
+local cruiseVehicle = 0
+local cruiseTargetSpeed = 0.0
+local cruiseOriginalMaxSpeed = 0.0
+local cruiseLastEngineHealth = 0.0
+local cruiseLastBodyHealth = 0.0
+local cruiseLimiterApplied = false
+local cruiseStartedAt = 0
+local externalCruiseOwnerCache = false
+local externalCruiseOwnerCheckedAt = -100000
+local MPH_PER_MPS = 2.236936
 
 local function getLocaleData()
     local localeName = Config.Locale or 'en'
@@ -246,6 +256,81 @@ local function getVehicleKey(vehicle)
     return ('entity:%s'):format(vehicle)
 end
 
+local function getControlOverride(vehicle, name)
+    local override = getVehicleOverride(vehicle)
+    local controls = override and override.Controls
+
+    if type(controls) == 'table' and controls[name] ~= nil then
+        return controls[name] == true
+    end
+
+    return nil
+end
+
+local function classSupportsControl(vehicle, name, config)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return false
+    end
+
+    local override = getControlOverride(vehicle, name)
+    if override ~= nil then
+        return override
+    end
+
+    local allowedClasses = type(config) == 'table' and config.AllowedClasses or nil
+    return type(allowedClasses) ~= 'table' or allowedClasses[GetVehicleClass(vehicle)] == true
+end
+
+local function getExternalCruiseOwner()
+    local cruiseConfig = Config.CruiseControl or {}
+    local check = cruiseConfig.ExternalResourceCheck
+
+    if type(check) ~= 'table' or check.Enabled ~= true then
+        externalCruiseOwnerCache = false
+        externalCruiseOwnerCheckedAt = -100000
+        return nil
+    end
+
+    local now = GetGameTimer()
+    local cacheMs = math.max(0, tonumber(check.CacheMs) or 1000)
+
+    if now >= externalCruiseOwnerCheckedAt and now - externalCruiseOwnerCheckedAt < cacheMs then
+        return externalCruiseOwnerCache or nil
+    end
+
+    externalCruiseOwnerCheckedAt = now
+    externalCruiseOwnerCache = false
+
+    if type(check.Resources) == 'table' then
+        for _, resource in ipairs(check.Resources) do
+            if isResourceStarted(resource) then
+                externalCruiseOwnerCache = resource
+                break
+            end
+        end
+    end
+
+    return externalCruiseOwnerCache or nil
+end
+
+local function isCruiseControlSupported(vehicle)
+    return getExternalCruiseOwner() == nil
+        and classSupportsControl(vehicle, 'cruise', Config.CruiseControl or {})
+end
+
+local function applyBoatAnchorState(vehicle, anchored)
+    if anchored then
+        SetBoatFrozenWhenAnchored(vehicle, true)
+        SetForcedBoatLocationWhenAnchored(vehicle, true)
+        SetBoatAnchor(vehicle, true)
+        return
+    end
+
+    SetBoatAnchor(vehicle, false)
+    SetForcedBoatLocationWhenAnchored(vehicle, false)
+    SetBoatFrozenWhenAnchored(vehicle, false)
+end
+
 local function getStoredVehicleState(vehicle)
     local key = getVehicleKey(vehicle)
     local model = GetEntityModel(vehicle)
@@ -261,16 +346,23 @@ local function getStoredVehicleState(vehicle)
         _model = model,
         _plate = plate,
         radio = true,
+        anchor = false,
         hazards = false,
         interiorLight = false,
         windows = {}
     }
 
     local networkConfig = getNetworkSyncConfig()
+    local hasSyncedAnchor = false
     if networkConfig.Enabled ~= false and NetworkGetEntityIsNetworked(vehicle) then
         local synced = Entity(vehicle).state[networkConfig.StateBagName or 'drs_vehcontrol']
 
         if type(synced) == 'table' then
+            if type(synced.anchor) == 'boolean' then
+                stored.anchor = synced.anchor
+                hasSyncedAnchor = true
+            end
+
             if type(synced.radio) == 'boolean' then
                 stored.radio = synced.radio
             end
@@ -299,6 +391,10 @@ local function getStoredVehicleState(vehicle)
     end
 
     vehicleToggles[key] = stored
+
+    if hasSyncedAnchor and IsThisModelABoat(model) then
+        applyBoatAnchorState(vehicle, stored.anchor)
+    end
 
     return stored
 end
@@ -453,6 +549,105 @@ local function emitVehicleAction(action, vehicle, details)
     }
 
     TriggerEvent('drs_vehcontrol:client:action', payload)
+end
+
+local function getCruiseConfig()
+    return Config.CruiseControl or {}
+end
+
+local function getCruiseLimiterSpeed(config, targetSpeed)
+    local allowanceMph = math.max(0.0, tonumber(config.OverspeedAllowanceMph) or 0.75)
+    return targetSpeed + allowanceMph / MPH_PER_MPS
+end
+
+local function getCruiseHoldSpeed(config, targetSpeed)
+    local offsetMph = math.max(0.0, tonumber(config.HoldOffsetMph) or 0.25)
+    local variationMph = math.max(0.0, tonumber(config.HoldVariationMph) or 1.0)
+    local periodMs = math.max(1000, math.floor(tonumber(config.HoldVariationPeriodMs) or 8000))
+    local elapsedMs = math.max(0, GetGameTimer() - cruiseStartedAt)
+    local phase = (elapsedMs % periodMs) / periodMs * math.pi * 2.0
+    local variation = (1.0 - math.cos(phase)) * 0.5 * variationMph
+
+    return math.max(0.0, targetSpeed - (offsetMph + variation) / MPH_PER_MPS)
+end
+
+local function applyCruiseCorrection(config, vehicle, currentSpeed, targetSpeed, steering)
+    if config.SpeedCorrection == false then
+        return
+    end
+
+    local pauseWhileSteering = config.PauseCorrectionWhileSteering ~= false
+    local holdSpeed = getCruiseHoldSpeed(config, targetSpeed)
+    local tolerance = math.max(0.0, tonumber(config.CorrectionToleranceMph) or 0.05) / MPH_PER_MPS
+
+    if not IsVehicleOnAllWheels(vehicle)
+        or (pauseWhileSteering and steering)
+    then
+        return
+    end
+
+    if currentSpeed < holdSpeed - tolerance then
+        SetVehicleForwardSpeed(vehicle, holdSpeed)
+    end
+end
+
+local function isGameplayControlPressed(control)
+    return IsControlPressed(0, control)
+        or IsDisabledControlPressed(0, control)
+        or IsControlPressed(2, control)
+        or IsDisabledControlPressed(2, control)
+end
+
+local function stopCruiseControl(reason, emitAction)
+    local vehicle = cruiseVehicle
+    local targetSpeed = cruiseTargetSpeed
+
+    if vehicle ~= 0 and DoesEntityExist(vehicle) and cruiseLimiterApplied then
+        SetVehicleMaxSpeed(vehicle, math.max(cruiseOriginalMaxSpeed, 0.0))
+    end
+
+    cruiseVehicle = 0
+    cruiseTargetSpeed = 0.0
+    cruiseOriginalMaxSpeed = 0.0
+    cruiseLastEngineHealth = 0.0
+    cruiseLastBodyHealth = 0.0
+    cruiseLimiterApplied = false
+    cruiseStartedAt = 0
+
+    if emitAction ~= false and vehicle ~= 0 and DoesEntityExist(vehicle) then
+        emitVehicleAction('cruise', vehicle, {
+            active = false,
+            targetMph = math.floor(targetSpeed * MPH_PER_MPS + 0.5),
+            reason = reason,
+            source = 'touchscreen'
+        })
+    end
+end
+
+local function startCruiseControl(vehicle, targetSpeed)
+    if cruiseVehicle ~= 0 then
+        stopCruiseControl('replaced', true)
+    end
+
+    local config = getCruiseConfig()
+
+    cruiseVehicle = vehicle
+    cruiseTargetSpeed = targetSpeed
+    cruiseOriginalMaxSpeed = math.max(GetVehicleEstimatedMaxSpeed(vehicle), targetSpeed)
+    cruiseLastEngineHealth = GetVehicleEngineHealth(vehicle)
+    cruiseLastBodyHealth = GetVehicleBodyHealth(vehicle)
+    cruiseLimiterApplied = config.UseSpeedLimiter ~= false
+    cruiseStartedAt = GetGameTimer()
+
+    if cruiseLimiterApplied then
+        SetVehicleMaxSpeed(vehicle, getCruiseLimiterSpeed(config, targetSpeed))
+    end
+
+    emitVehicleAction('cruise', vehicle, {
+        active = true,
+        targetMph = math.floor(targetSpeed * MPH_PER_MPS + 0.5),
+        source = 'touchscreen'
+    })
 end
 
 local function getKeyFobConfig()
@@ -1149,6 +1344,80 @@ local function hasTrailer(vehicle)
     return attached and trailer ~= 0
 end
 
+local function getCruiseControlState(vehicle)
+    local externalOwner = getExternalCruiseOwner()
+    local supported = isCruiseControlSupported(vehicle)
+    local active = supported and cruiseVehicle == vehicle and cruiseTargetSpeed > 0.0
+
+    return {
+        supported = supported,
+        active = active,
+        targetMph = active and math.floor(cruiseTargetSpeed * MPH_PER_MPS + 0.5) or 0,
+        externalOwner = externalOwner
+    }
+end
+
+local function isBoatAnchorSupported(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return false
+    end
+
+    local override = getVehicleOverride(vehicle)
+    local controls = override and override.Controls
+
+    if type(controls) == 'table' and controls.anchor ~= nil then
+        return controls.anchor == true
+    end
+
+    return IsThisModelABoat(GetEntityModel(vehicle))
+end
+
+local function getBoatAnchorState(vehicle)
+    local supported = isBoatAnchorSupported(vehicle)
+
+    return {
+        supported = supported,
+        active = supported and getStoredVehicleState(vehicle).anchor or false
+    }
+end
+
+local function isLandingGearSupported(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return false
+    end
+
+    local override = getVehicleOverride(vehicle)
+    local controls = override and override.Controls
+
+    if type(controls) == 'table' and controls.landingGear ~= nil then
+        return controls.landingGear == true
+    end
+
+    return DoesVehicleHaveLandingGear(vehicle)
+end
+
+local function getLandingGearState(vehicle)
+    local supported = isLandingGearSupported(vehicle)
+
+    if not supported then
+        return {
+            supported = false,
+            active = false,
+            moving = false,
+            broken = false
+        }
+    end
+
+    local state = GetLandingGearState(vehicle)
+
+    return {
+        supported = true,
+        active = state == 0 or state == 3,
+        moving = state == 1 or state == 3,
+        broken = state == 5
+    }
+end
+
 local function getRoofState(vehicle)
     local state = GetConvertibleRoofState(vehicle)
 
@@ -1236,6 +1505,11 @@ local function applySyncedVehicleState(vehicle, synced)
     end
 
     local stored = getStoredVehicleState(vehicle)
+
+    if type(synced.anchor) == 'boolean' and networkStateEnabled('anchor') and isBoatAnchorSupported(vehicle) then
+        stored.anchor = synced.anchor
+        applyBoatAnchorState(vehicle, stored.anchor)
+    end
 
     if type(synced.radio) == 'boolean' and networkStateEnabled('radio') then
         stored.radio = synced.radio
@@ -1366,6 +1640,8 @@ local function getVehicleState()
         fuel = math.floor(GetVehicleFuelLevel(vehicle) + 0.5)
     end
 
+    local interfaceFrame = Config.InterfaceFrame or {}
+
     return {
         canUse = true,
         locale = getLocaleData(),
@@ -1373,6 +1649,9 @@ local function getVehicleState()
         vehicleName = getVehicleName(vehicle),
         vehicleClass = vehicleClass,
         vehicleClassName = getVehicleClassName(vehicleClass),
+        interfaceFrame = {
+            enabled = interfaceFrame.Enabled ~= false
+        },
         fuel = fuel,
         engineHealth = math.floor(GetVehicleEngineHealth(vehicle) / 10 + 0.5),
         engine = engineRunning,
@@ -1380,6 +1659,9 @@ local function getVehicleState()
         radio = stored.radio,
         hazards = stored.hazards,
         interiorLight = stored.interiorLight,
+        cruise = getCruiseControlState(vehicle),
+        anchor = getBoatAnchorState(vehicle),
+        landingGear = getLandingGearState(vehicle),
         trailer = hasTrailer(vehicle),
         roof = getRoofState(vehicle),
         doors = getAvailableDoors(vehicle),
@@ -1526,6 +1808,9 @@ local function getVehicleDiagnostics(vehicle)
         hasOverride = getVehicleOverride(vehicle) ~= nil,
         hasKey = hasKeyFobKey(vehicle),
         controls = getEnabledControls(vehicle),
+        cruise = getCruiseControlState(vehicle),
+        anchor = getBoatAnchorState(vehicle),
+        landingGear = getLandingGearState(vehicle),
         doors = getAvailableDoors(vehicle),
         windows = getAvailableWindows(vehicle),
         seats = getAvailableSeats(vehicle),
@@ -1870,6 +2155,49 @@ RegisterNUICallback('toggleInteriorLight', function(_, cb)
     cb({ ok = ok, reason = reason })
 end)
 
+RegisterNUICallback('toggleCruise', function(_, cb)
+    local vehicle = getVehicle()
+    local externalOwner = getExternalCruiseOwner()
+    local supported = isCruiseControlSupported(vehicle)
+    local ok, reason
+
+    if externalOwner then
+        ok, reason = denyAction('cruise', 'external_cruise_resource')
+    elseif not supported then
+        ok, reason = denyAction('cruise', 'unsupported_cruise')
+    else
+        ok, reason = validateVehicleAction('cruise', vehicle, 'cruise')
+    end
+
+    if ok then
+        if cruiseVehicle == vehicle and cruiseTargetSpeed > 0.0 then
+            stopCruiseControl('manual', true)
+        else
+            local config = getCruiseConfig()
+            local minSpeedMph = math.max(0.0, tonumber(config.MinSpeedMph) or 20.0)
+            local maxSpeedMph = math.max(minSpeedMph, tonumber(config.MaxSpeedMph) or 120.0)
+            local speedMph = GetEntitySpeed(vehicle) * MPH_PER_MPS
+            local forwardSpeed = GetEntitySpeedVector(vehicle, true).y
+
+            if not GetIsVehicleEngineRunning(vehicle) or forwardSpeed <= 0.0 then
+                ok, reason = denyAction('cruise', 'cruise_unavailable')
+                notify(L('notifications.cruiseUnavailable', nil, 'Cruise control is only available while driving forward with the engine running.'), 'error')
+            elseif speedMph < minSpeedMph or speedMph > maxSpeedMph then
+                ok, reason = denyAction('cruise', 'cruise_speed')
+                notify(L('notifications.cruiseSpeedRange', {
+                    min = ('%.0f'):format(minSpeedMph),
+                    max = ('%.0f'):format(maxSpeedMph)
+                }, ('Cruise control is available between %.0f and %.0f MPH.'):format(minSpeedMph, maxSpeedMph)), 'error')
+            else
+                startCruiseControl(vehicle, GetEntitySpeed(vehicle))
+            end
+        end
+    end
+
+    sendVehicleStateAfterAction()
+    cb({ ok = ok, reason = reason })
+end)
+
 RegisterNUICallback('detachTrailer', function(_, cb)
     local vehicle = getVehicle()
     local ok, reason = validateVehicleAction('trailer', vehicle, 'trailer')
@@ -1883,6 +2211,67 @@ RegisterNUICallback('detachTrailer', function(_, cb)
         else
             ok, reason = denyAction('trailer', 'no_trailer')
         end
+    end
+
+    sendVehicleStateAfterAction()
+    cb({ ok = ok, reason = reason })
+end)
+
+RegisterNUICallback('toggleAnchor', function(_, cb)
+    local vehicle = getVehicle()
+    local supported = isBoatAnchorSupported(vehicle)
+    local ok, reason
+
+    if not supported then
+        ok, reason = denyAction('anchor', 'unsupported_anchor')
+    else
+        ok, reason = validateVehicleAction('anchor', vehicle, 'anchor')
+    end
+
+    if ok then
+        local stored = getStoredVehicleState(vehicle)
+        local anchored = not stored.anchor
+        local anchorConfig = Config.BoatAnchor or {}
+        local maxSpeedMph = math.max(0.0, tonumber(anchorConfig.MaxSpeedMph) or 10.0)
+        local speedMph = GetEntitySpeed(vehicle) * 2.236936
+
+        if anchored and speedMph >= maxSpeedMph then
+            ok, reason = denyAction('anchor', 'anchor_too_fast')
+            notify(L('notifications.anchorTooFast', {
+                speed = ('%.0f'):format(maxSpeedMph)
+            }, ('Slow below %.0f MPH before lowering the anchor.'):format(maxSpeedMph)), 'error')
+        elseif anchored and not CanAnchorBoatHere(vehicle) then
+            ok, reason = denyAction('anchor', 'unsafe_anchor_position')
+            notify(L('notifications.cannotAnchorHere', nil, 'Cannot anchor here.'), 'error')
+        else
+            stored.anchor = anchored
+            applyBoatAnchorState(vehicle, anchored)
+            syncVehicleState(vehicle, { anchor = anchored })
+            emitVehicleAction('anchor', vehicle, { active = anchored, source = 'touchscreen' })
+        end
+    end
+
+    sendVehicleStateAfterAction()
+    cb({ ok = ok, reason = reason })
+end)
+
+RegisterNUICallback('toggleLandingGear', function(_, cb)
+    local vehicle = getVehicle()
+    local landingGear = getLandingGearState(vehicle)
+    local ok, reason
+
+    if not landingGear.supported then
+        ok, reason = denyAction('landingGear', 'unsupported_landing_gear')
+    elseif landingGear.broken then
+        ok, reason = denyAction('landingGear', 'broken_landing_gear')
+    else
+        ok, reason = validateVehicleAction('landingGear', vehicle, 'landingGear')
+    end
+
+    if ok then
+        local deploy = not landingGear.active
+        ControlLandingGear(vehicle, deploy and 2 or 1)
+        emitVehicleAction('landingGear', vehicle, { active = deploy, source = 'touchscreen' })
     end
 
     sendVehicleStateAfterAction()
@@ -2179,6 +2568,79 @@ end)
 
 CreateThread(function()
     while true do
+        if cruiseVehicle == 0 then
+            Wait(250)
+        else
+            local vehicle = cruiseVehicle
+            local ped = getPed()
+            local config = getCruiseConfig()
+            local cancelReason
+
+            if not DoesEntityExist(vehicle) then
+                cancelReason = 'vehicle_missing'
+            elseif GetVehiclePedIsIn(ped, false) ~= vehicle or GetPedInVehicleSeat(vehicle, -1) ~= ped then
+                cancelReason = 'driver_changed'
+            elseif not GetIsVehicleEngineRunning(vehicle) or not IsVehicleDriveable(vehicle, false) then
+                cancelReason = 'engine_off'
+            elseif getExternalCruiseOwner() then
+                cancelReason = 'external_resource'
+            elseif not isCruiseControlSupported(vehicle) or not canUseVehicleControl(vehicle, 'cruise') then
+                cancelReason = 'control_unavailable'
+            elseif isGameplayControlPressed(72) or isGameplayControlPressed(62) then
+                cancelReason = 'brake'
+            elseif isGameplayControlPressed(76) then
+                cancelReason = 'handbrake'
+            else
+                local forwardSpeed = GetEntitySpeedVector(vehicle, true).y
+                local engineHealth = GetVehicleEngineHealth(vehicle)
+                local bodyHealth = GetVehicleBodyHealth(vehicle)
+                local damageThreshold = math.max(0.0, tonumber(config.DamageCancelThreshold) or 75.0)
+
+                if forwardSpeed < -0.1 then
+                    cancelReason = 'reverse'
+                elseif damageThreshold > 0.0 and (
+                    cruiseLastEngineHealth - engineHealth >= damageThreshold
+                    or cruiseLastBodyHealth - bodyHealth >= damageThreshold
+                ) then
+                    cancelReason = 'damage'
+                else
+                    local acceleratorPressed = isGameplayControlPressed(71) or isGameplayControlPressed(61)
+                    local steering = isGameplayControlPressed(63) or isGameplayControlPressed(64)
+                    local currentSpeed = GetEntitySpeed(vehicle)
+
+                    if cruiseLimiterApplied then
+                        SetVehicleMaxSpeed(
+                            vehicle,
+                            acceleratorPressed and cruiseOriginalMaxSpeed or getCruiseLimiterSpeed(config, cruiseTargetSpeed)
+                        )
+                    end
+
+                    if acceleratorPressed then
+                        cruiseStartedAt = GetGameTimer()
+                    else
+                        applyCruiseCorrection(config, vehicle, currentSpeed, cruiseTargetSpeed, steering)
+                    end
+
+                    cruiseLastEngineHealth = engineHealth
+                    cruiseLastBodyHealth = bodyHealth
+                end
+            end
+
+            if cancelReason then
+                stopCruiseControl(cancelReason, true)
+
+                if uiOpen then
+                    sendVehicleState()
+                end
+            end
+
+            Wait(0)
+        end
+    end
+end)
+
+CreateThread(function()
+    while true do
         if fobPanicVehicle ~= 0 then
             local vehicle = fobPanicVehicle
 
@@ -2315,6 +2777,10 @@ end
 AddEventHandler('onResourceStop', function(resourceName)
     if resourceName ~= GetCurrentResourceName() then
         return
+    end
+
+    if cruiseVehicle ~= 0 then
+        stopCruiseControl('resource_stop', false)
     end
 
     if uiOpen or fobOpen then

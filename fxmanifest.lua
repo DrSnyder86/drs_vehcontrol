@@ -5,7 +5,7 @@ lua54 'yes'
 
 author 'DrSnyder'
 description 'Modern vehicle touchscreen control panel & keyfob'
-version '1.1.0'
+version '1.3.2'
 
 shared_scripts {
     'config.lua',
@@ -22,5 +22,6 @@ files {
     'html/app.js',
     'html/img/classes/*.png',
     'html/img/fob_frames/*.png',
+    'html/img/touchscreen_frames/*.png',
     'html/img/icons/*.png'
 }

@@ -11,7 +11,8 @@
 </head>
 <body>
     <main id="veh-control" class="veh-control" aria-hidden="true">
-        <section class="touchscreen" aria-label="Vehicle control touchscreen" data-locale-aria="ui.vehicleControlAria">
+        <div id="touchscreen-shell" class="touchscreen-shell frame-default">
+            <section class="touchscreen" aria-label="Vehicle control touchscreen" data-locale-aria="ui.vehicleControlAria">
             <header class="top-strip">
                 <div class="identity">
                     <span id="plate" class="plate" aria-label="Vehicle plate">
@@ -96,15 +97,22 @@
                         </label>
                         <div class="settings-row">
                             <span data-locale="ui.settings.position">Position</span>
-                            <div class="settings-actions">
-                                <button id="move-toggle" class="settings-action" type="button" data-locale="ui.settings.move">Move</button>
-                                <button id="reset-position" class="settings-action" type="button" data-locale="ui.settings.reset">Reset</button>
+                            <div class="position-settings">
+                                <label class="slider-field">
+                                    <span data-locale="ui.settings.size">Size</span>
+                                    <input id="ui-scale" class="range-input" type="range" min="65" max="100" step="1" value="100" aria-label="Vehicle control size" data-locale-aria="ui.settings.sizeAria">
+                                </label>
+                                <div class="settings-actions">
+                                    <button id="move-toggle" class="settings-action" type="button" data-locale="ui.settings.move">Move</button>
+                                    <button id="reset-position" class="settings-action" type="button" data-locale="ui.settings.reset">Reset</button>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </section>
             </div>
-        </section>
+            </section>
+        </div>
     </main>
 
     <main id="key-fob" class="key-fob" aria-hidden="true">

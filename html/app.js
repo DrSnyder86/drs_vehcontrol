@@ -1,6 +1,7 @@
 const resourceName = typeof GetParentResourceName === 'function' ? GetParentResourceName() : 'drs_vehcontrol';
 
 const root = document.getElementById('veh-control');
+const touchscreenShell = document.getElementById('touchscreen-shell');
 const touchscreen = document.querySelector('.touchscreen');
 const topStrip = document.querySelector('.top-strip');
 const plate = document.getElementById('plate');
@@ -14,6 +15,7 @@ const accentSwatches = document.getElementById('accent-swatches');
 const customAccent = document.getElementById('custom-accent');
 const brightnessSlider = document.getElementById('ui-brightness');
 const photoOverlaySlider = document.getElementById('photo-overlay');
+const uiScaleSlider = document.getElementById('ui-scale');
 const moveToggle = document.getElementById('move-toggle');
 const resetPositionButton = document.getElementById('reset-position');
 const closeButton = document.getElementById('close');
@@ -59,6 +61,7 @@ const defaultSettings = {
     accent: '',
     brightness: 100,
     photoOverlay: 82,
+    scale: 1,
     position: {
         x: 0,
         y: 0
@@ -72,7 +75,7 @@ const defaultSettings = {
     }
 };
 
-const fobScalePresets = [0.86, 0.94, 1, 1.08, 1.16];
+const fobScalePresets = [1.16, 1.08, 1, 0.94, 0.86, 0.78, 0.7, 0.62];
 
 let uiSettings = loadSettings();
 
@@ -91,7 +94,10 @@ const icons = {
     windowsUp: '<path d="M5 8h14l-1 10H6z"/><path d="M8 20h8"/><path d="m9 4 3-2 3 2"/><path d="M12 2v8"/>',
     seat: '<path d="M7 4h7a3 3 0 0 1 3 3v5h-6l-1 5H5V7a3 3 0 0 1 2-3z"/><path d="M11 12h8l1 6H10"/>',
     trailer: '<path d="M3 14h12v5H3z"/><path d="M15 16h3l3-3"/><circle cx="6" cy="20" r="1.5"/><circle cx="12" cy="20" r="1.5"/><path d="M5 14V9h6v5"/>',
+    anchor: '<circle cx="12" cy="5" r="2"/><path d="M12 7v12M5 11h14"/><path d="M4 15a8 8 0 0 0 16 0"/><path d="m4 15-2 3M20 15l2 3"/>',
+    landingGear: '<path d="M12 3v9M6 7l6 4 6-4"/><path d="m9 11-3 6M15 11l3 6"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/>',
     roof: '<path d="M4 14h16l-2 5H6z"/><path d="M7 14c2-5 8-5 10 0"/><path d="M8 10 6 6M16 10l2-4"/>',
+    cruise: '<path d="M5 18a8 8 0 1 1 14 0"/><path d="m12 12 4-3"/><path d="M8 18h8"/><path d="M7 8 5 6M17 8l2-2M12 6V3"/>',
     extra: '<path d="M12 3v18M3 12h18"/><path d="M5 5h4v4H5zM15 5h4v4h-4zM5 15h4v4H5zM15 15h4v4h-4z"/>',
     closeAll: '<path d="M5 5h14v14H5z"/><path d="m8 8 8 8M16 8l-8 8"/>',
     move: '<path d="M12 3v18M3 12h18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/>',
@@ -170,7 +176,7 @@ const vehicleClassLabelStyles = {
 };
 
 const fobCaseStyles = ['default', 'performance', 'luxury', 'rugged', 'fleet', 'tactical', 'moto', 'aero'];
-const fobCaseByClass = {
+const fobCaseStyleByClass = {
     0: 'default',
     1: 'luxury',
     2: 'luxury',
@@ -340,9 +346,20 @@ async function post(action, data = {}) {
             body: JSON.stringify(data)
         });
 
-        return response.ok;
+        let payload = null;
+
+        try {
+            payload = await response.json();
+        } catch (error) {
+            // Some close/ready callbacks may return no JSON body.
+        }
+
+        return {
+            ok: response.ok && payload?.ok !== false,
+            reason: payload?.reason || (response.ok ? null : 'request_failed')
+        };
     } catch (error) {
-        return false;
+        return { ok: false, reason: 'request_failed' };
     }
 }
 
@@ -354,6 +371,7 @@ function loadSettings() {
             accent: stored?.accent || defaultSettings.accent,
             brightness: normalizeBrightness(stored?.brightness),
             photoOverlay: normalizePhotoOverlay(stored?.photoOverlay),
+            scale: normalizeUiScale(stored?.scale),
             position: {
                 x: Number(stored?.position?.x) || 0,
                 y: Number(stored?.position?.y) || 0
@@ -371,6 +389,7 @@ function loadSettings() {
             accent: defaultSettings.accent,
             brightness: defaultSettings.brightness,
             photoOverlay: defaultSettings.photoOverlay,
+            scale: defaultSettings.scale,
             position: {
                 x: defaultSettings.position.x,
                 y: defaultSettings.position.y
@@ -414,6 +433,17 @@ function normalizePhotoOverlay(value) {
     return Math.min(95, Math.max(35, Math.round(next)));
 }
 
+function normalizeUiScale(value) {
+    const next = Number(value);
+
+    if (!Number.isFinite(next)) {
+        return defaultSettings.scale;
+    }
+
+    const scale = next > 2 ? next / 100 : next;
+    return Math.min(1, Math.max(0.65, Math.round(scale * 100) / 100));
+}
+
 function normalizeFobScale(value) {
     const next = Number(value);
 
@@ -421,7 +451,7 @@ function normalizeFobScale(value) {
         return defaultSettings.fob.scale;
     }
 
-    return Math.min(1.2, Math.max(0.8, Math.round(next * 100) / 100));
+    return Math.min(1.2, Math.max(0.62, Math.round(next * 100) / 100));
 }
 
 function getFobSettings() {
@@ -505,6 +535,15 @@ function applyPosition() {
     root.style.setProperty('--menu-offset-y', `${uiSettings.position.y}px`);
 }
 
+function applyUiScale(value = uiSettings.scale) {
+    const scale = normalizeUiScale(value);
+
+    uiSettings.scale = scale;
+    root.style.setProperty('--ui-scale', scale.toFixed(2));
+    uiScaleSlider.value = String(Math.round(scale * 100));
+    uiScaleSlider.setAttribute('aria-valuetext', `${Math.round(scale * 100)}%`);
+}
+
 function applyFobLayout() {
     const settings = getFobSettings();
 
@@ -524,6 +563,13 @@ function applyVehicleClassArt(classId) {
 
     touchscreen.style.setProperty('--class-art', `url("${art.image}")`);
     touchscreen.style.setProperty('--class-tint', art.tint);
+}
+
+function applyTouchscreenFrame(config = {}) {
+    const enabled = (config.enabled ?? config.Enabled) !== false;
+
+    touchscreenShell.classList.toggle('frame-disabled', !enabled);
+    touchscreenShell.dataset.frame = enabled ? 'enabled' : 'disabled';
 }
 
 function fitVehicleClassLabel() {
@@ -562,7 +608,7 @@ function applyFobVehicleClassArt(classId) {
 }
 
 function applyFobCaseStyle(classId) {
-    const style = fobCaseByClass[classId] || 'default';
+    const style = fobCaseStyleByClass[classId] || 'default';
 
     fobCaseStyles.forEach((caseStyle) => {
         fobRoot.classList.toggle(`case-${caseStyle}`, caseStyle === style);
@@ -570,33 +616,42 @@ function applyFobCaseStyle(classId) {
     fobRoot.dataset.caseStyle = style;
 }
 
+function getScaledBounds(element, scale, nextX, nextY) {
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    const scaledWidth = width * scale;
+    const scaledHeight = height * scale;
+    const left = element.offsetLeft + (width - scaledWidth) / 2 + nextX;
+    const top = element.offsetTop + height - scaledHeight + nextY;
+
+    return {
+        left,
+        right: left + scaledWidth,
+        top,
+        bottom: top + scaledHeight
+    };
+}
+
 function clampPosition(nextX, nextY) {
     const margin = 10;
-    const rect = touchscreen.getBoundingClientRect();
+    const bounds = getScaledBounds(touchscreenShell, normalizeUiScale(uiSettings.scale), nextX, nextY);
     let x = nextX;
     let y = nextY;
 
-    const deltaX = nextX - uiSettings.position.x;
-    const deltaY = nextY - uiSettings.position.y;
-    const nextLeft = rect.left + deltaX;
-    const nextRight = rect.right + deltaX;
-    const nextTop = rect.top + deltaY;
-    const nextBottom = rect.bottom + deltaY;
-
-    if (nextLeft < margin) {
-        x += margin - nextLeft;
+    if (bounds.left < margin) {
+        x += margin - bounds.left;
     }
 
-    if (nextRight > window.innerWidth - margin) {
-        x -= nextRight - (window.innerWidth - margin);
+    if (bounds.right > window.innerWidth - margin) {
+        x -= bounds.right - (window.innerWidth - margin);
     }
 
-    if (nextTop < margin) {
-        y += margin - nextTop;
+    if (bounds.top < margin) {
+        y += margin - bounds.top;
     }
 
-    if (nextBottom > window.innerHeight - margin) {
-        y -= nextBottom - (window.innerHeight - margin);
+    if (bounds.bottom > window.innerHeight - margin) {
+        y -= bounds.bottom - (window.innerHeight - margin);
     }
 
     return { x, y };
@@ -605,31 +660,24 @@ function clampPosition(nextX, nextY) {
 function clampFobPosition(nextX, nextY) {
     const margin = 10;
     const settings = getFobSettings();
-    const rect = fobRoot.getBoundingClientRect();
+    const bounds = getScaledBounds(fobRoot, settings.scale, nextX, nextY);
     let x = nextX;
     let y = nextY;
 
-    const deltaX = nextX - settings.position.x;
-    const deltaY = nextY - settings.position.y;
-    const nextLeft = rect.left + deltaX;
-    const nextRight = rect.right + deltaX;
-    const nextTop = rect.top + deltaY;
-    const nextBottom = rect.bottom + deltaY;
-
-    if (nextLeft < margin) {
-        x += margin - nextLeft;
+    if (bounds.left < margin) {
+        x += margin - bounds.left;
     }
 
-    if (nextRight > window.innerWidth - margin) {
-        x -= nextRight - (window.innerWidth - margin);
+    if (bounds.right > window.innerWidth - margin) {
+        x -= bounds.right - (window.innerWidth - margin);
     }
 
-    if (nextTop < margin) {
-        y += margin - nextTop;
+    if (bounds.top < margin) {
+        y += margin - bounds.top;
     }
 
-    if (nextBottom > window.innerHeight - margin) {
-        y -= nextBottom - (window.innerHeight - margin);
+    if (bounds.bottom > window.innerHeight - margin) {
+        y -= bounds.bottom - (window.innerHeight - margin);
     }
 
     return { x, y };
@@ -712,6 +760,50 @@ function hydrateInlineIcons() {
     });
 }
 
+function bindButtonAction(button, onAction, pendingDelay = 160, disableWhilePending = false) {
+    const activate = async () => {
+        if (button.disabled || button.classList.contains('pending')) {
+            return;
+        }
+
+        tapSound();
+        button.classList.add('pending');
+
+        if (disableWhilePending) {
+            button.disabled = true;
+        }
+
+        try {
+            await onAction();
+        } finally {
+            window.setTimeout(() => {
+                button.classList.remove('pending');
+
+                if (disableWhilePending) {
+                    button.disabled = false;
+                }
+            }, pendingDelay);
+        }
+    };
+
+    button.addEventListener('pointerdown', (event) => {
+        if (!event.isPrimary || event.button !== 0) {
+            return;
+        }
+
+        activate();
+    });
+
+    button.addEventListener('click', (event) => {
+        // Pointer input is handled on pointerdown so a polling render cannot swallow it.
+        if (event.detail !== 0) {
+            return;
+        }
+
+        activate();
+    });
+}
+
 function control(options) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -726,24 +818,7 @@ function control(options) {
     button.innerHTML = `${icon(options.icon)}<span>${options.label}</span>`;
 
     if (options.onClick) {
-        button.addEventListener('click', async () => {
-            if (button.classList.contains('pending')) {
-                return;
-            }
-
-            tapSound();
-            button.classList.add('pending');
-            button.disabled = true;
-
-            try {
-                await options.onClick();
-            } finally {
-                window.setTimeout(() => {
-                    button.classList.remove('pending');
-                    button.disabled = Boolean(options.disabled);
-                }, 160);
-            }
-        });
+        bindButtonAction(button, options.onClick, 160, true);
     }
 
     return button;
@@ -792,6 +867,18 @@ function renderVehicle() {
             icon: state.locked ? 'lock' : 'unlock',
             active: state.locked,
             onClick: () => post('toggleLock')
+        }));
+    }
+
+    if (enabled('cruise') && state.cruise?.supported) {
+        const cruiseSpeed = state.cruise.targetMph || 0;
+        buttons.push(control({
+            label: state.cruise.active
+                ? t('ui.controls.cruiseActive', `Cruise ${cruiseSpeed}`, { speed: cruiseSpeed })
+                : t('ui.controls.cruiseSet', 'Set Cruise'),
+            icon: 'cruise',
+            active: state.cruise.active,
+            onClick: () => post('toggleCruise')
         }));
     }
 
@@ -906,6 +993,33 @@ function renderSeats() {
 function renderUtility() {
     const buttons = [];
 
+    if (enabled('anchor') && state.anchor && state.anchor.supported) {
+        buttons.push(control({
+            label: state.anchor.active
+                ? t('ui.controls.anchorDown', 'Anchor Down')
+                : t('ui.controls.anchorUp', 'Anchor Up'),
+            icon: 'anchor',
+            active: state.anchor.active,
+            onClick: () => post('toggleAnchor')
+        }));
+    }
+
+    if (enabled('landingGear') && state.landingGear && state.landingGear.supported) {
+        const label = state.landingGear.broken
+            ? t('ui.controls.gearBroken', 'Gear Broken')
+            : state.landingGear.active
+                ? t('ui.controls.gearDown', 'Gear Down')
+                : t('ui.controls.gearUp', 'Gear Up');
+
+        buttons.push(control({
+            label,
+            icon: 'landingGear',
+            active: state.landingGear.active,
+            disabled: state.landingGear.broken,
+            onClick: () => post('toggleLandingGear')
+        }));
+    }
+
     if (enabled('trailer') && state.trailer) {
         buttons.push(control({
             label: t('ui.controls.detach', 'Detach'),
@@ -959,6 +1073,7 @@ function render() {
     applyVehicleClassLabel(state.vehicleClass, state.vehicleClassName || t('ui.vehicle', 'Vehicle'));
     fuel.textContent = t('ui.fuel', `${state.fuel || 0}% FUEL`, { value: state.fuel || 0 });
     health.textContent = t('ui.engineHealth', `${state.engineHealth || 0}% ENG`, { value: state.engineHealth || 0 });
+    applyTouchscreenFrame(state.interfaceFrame);
     applyVehicleClassArt(state.vehicleClass);
 
     renderVehicle();
@@ -1009,15 +1124,16 @@ function setFobButton(action, options) {
     button.title = options.title || options.label;
 
     const iconTarget = button.querySelector('.fob-action-icon');
-    if (iconTarget && options.icon) {
+    if (iconTarget && options.icon && iconTarget.dataset.iconName !== options.icon) {
         iconTarget.innerHTML = icon(options.icon);
+        iconTarget.dataset.iconName = options.icon;
     }
 
     const label = Array.from(button.children).find((child) => {
         return child.tagName === 'SPAN' && !child.classList.contains('fob-action-icon');
     });
 
-    if (label) {
+    if (label && label.textContent !== options.label) {
         label.textContent = options.label;
         fitFobButtonLabel(label);
     }
@@ -1175,6 +1291,17 @@ photoOverlaySlider.addEventListener('input', () => {
     applyPhotoOverlay();
 });
 
+uiScaleSlider.addEventListener('input', () => {
+    uiSettings.scale = normalizeUiScale(uiScaleSlider.value);
+    applyUiScale();
+
+    window.requestAnimationFrame(() => {
+        uiSettings.position = clampPosition(uiSettings.position.x, uiSettings.position.y);
+        applyPosition();
+        saveSettings();
+    });
+});
+
 topStrip.addEventListener('pointerdown', (event) => {
     if (!moveMode || event.target.closest('button')) {
         return;
@@ -1240,22 +1367,11 @@ fobResizeButton.addEventListener('click', () => {
 });
 
 fobActionButtons.forEach((button) => {
-    button.addEventListener('click', async () => {
-        if (button.disabled || button.classList.contains('pending')) {
-            return;
-        }
-
-        tapSound();
-        button.classList.add('pending');
-
-        try {
-            await post('keyFobAction', { action: button.dataset.fobAction });
-        } finally {
-            window.setTimeout(() => {
-                button.classList.remove('pending');
-            }, 180);
-        }
-    });
+    bindButtonAction(
+        button,
+        () => post('keyFobAction', { action: button.dataset.fobAction }),
+        180
+    );
 });
 
 fobShell.addEventListener('pointerdown', (event) => {
@@ -1382,10 +1498,12 @@ applyStaticLocale();
 updateFobClock();
 window.setInterval(updateFobClock, 10000);
 applyPosition();
+applyUiScale();
 applyFobLayout();
 applyAccent(uiSettings.accent || '#4fd8ff');
 applyBrightness();
 applyPhotoOverlay();
+applyTouchscreenFrame();
 applyVehicleClassArt('default');
 
 if (document.fonts) {

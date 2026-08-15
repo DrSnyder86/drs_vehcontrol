@@ -58,7 +58,7 @@ local function sanitizePatch(patch)
 
     local clean = {}
 
-    for _, name in ipairs({ 'hazards', 'interiorLight', 'radio' }) do
+    for _, name in ipairs({ 'anchor', 'hazards', 'interiorLight', 'radio' }) do
         if stateEnabled(name) and type(patch[name]) == 'boolean' then
             clean[name] = patch[name]
         end
@@ -80,7 +80,7 @@ local function copySyncedState(value)
         return copy
     end
 
-    for _, name in ipairs({ 'hazards', 'interiorLight', 'radio' }) do
+    for _, name in ipairs({ 'anchor', 'hazards', 'interiorLight', 'radio' }) do
         if type(value[name]) == 'boolean' then
             copy[name] = value[name]
         end
