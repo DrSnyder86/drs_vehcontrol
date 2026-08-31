@@ -57,6 +57,11 @@ Locales.de = {
             interiorLight = 'Innenlicht',
             cruiseSet = 'Tempomat setzen',
             cruiseActive = 'Tempomat {speed}',
+            autopilotStart = 'Autopilot starten',
+            autopilotEnRoute = 'Autopilot unterwegs',
+            autopilotHolding = 'Autopilot im Haltemodus',
+            hoverStart = 'Schwebeflug starten',
+            hoverActive = 'Schwebeflug aktiv',
             closeAll = 'Alle schließen',
             allDown = 'Alle runter',
             allUp = 'Alle hoch',
@@ -107,8 +112,14 @@ Locales.de = {
         seatOccupied = 'Dieser Sitz ist belegt.',
         cannotAnchorHere = 'Hier kann nicht geankert werden.',
         anchorTooFast = 'Fahre langsamer als {speed} MPH, bevor du den Anker senkst.',
+        anchorMoveBlocked = 'Hebe den Anker, bevor du versuchst, das Boot zu bewegen.',
         cruiseUnavailable = 'Der Tempomat ist nur bei Vorwärtsfahrt mit laufendem Motor verfügbar.',
-        cruiseSpeedRange = 'Der Tempomat ist zwischen {min} und {max} MPH verfügbar.'
+        cruiseSpeedRange = 'Der Tempomat ist zwischen {min} und {max} MPH verfügbar.',
+        autopilotNoWaypoint = 'Setze vor dem Start des Autopiloten einen Wegpunkt auf der Karte.',
+        autopilotUnavailable = 'Für den Autopiloten musst du dich bei laufendem Motor in der Luft und auf dem Pilotensitz befinden.',
+        autopilotWaypointTooClose = 'Wähle einen Wegpunkt, der mindestens {distance} Meter entfernt ist.',
+        autopilotPlaneTooSlow = 'Erreiche mindestens {speed} MPH, bevor du den Flugzeug-Autopiloten startest.',
+        hoverReleasedByInput = 'Der Schwebemodus wurde wegen einer Piloteneingabe deaktiviert.'
     },
 
     fobMessages = {

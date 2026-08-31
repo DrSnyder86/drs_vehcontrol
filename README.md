@@ -32,6 +32,7 @@ The resource is standalone by default, with optional compatibility for popular v
 - Hazard lights.
 - Interior light.
 - Driver-only cruise control with configurable speed limits, safety cancellation, and optional QB/Qbox cruise-resource conflict detection.
+- Driver-only waypoint autopilot for supported planes and helicopters, plus a position-and-heading hover mode for helicopters.
 - Boat anchor toggle that holds position when the current location is safe and the boat is below the configured speed limit.
 - Retractable landing-gear control for supported planes and helicopters.
 - Trailer detach when a trailer is attached.
@@ -156,6 +157,7 @@ Config.Controls = {
     hazards = true,
     interiorLight = true,
     cruise = true,
+    autopilot = true,
     anchor = true,
     landingGear = true,
     trailer = true,
@@ -170,11 +172,13 @@ Headlight and turn signal controls are intentionally not included.
 
 ```lua
 Config.BoatAnchor = {
-    MaxSpeedMph = 10.0
+    MaxSpeedMph = 10.0,
+    MoveAttemptNotifyCooldownMs = 1500,
+    MovementControls = { 61, 62, 71, 72 }
 }
 ```
 
-The anchor can only be lowered while the boat is moving below this speed. Raising the anchor is always allowed.
+The anchor can only be lowered while the boat is moving below this speed. Raising the anchor is always allowed. Lowering and raising it stay silent; if the driver presses a configured throttle or reverse control while it is down, the resource shows one warning per input attempt. `MoveAttemptNotifyCooldownMs` prevents rapid repeated attempts from spamming notifications.
 
 ### Cruise Control
 
@@ -191,6 +195,36 @@ Config.CruiseControl = {
     PauseCorrectionWhileSteering = true,
     UseSpeedLimiter = true,
     DamageCancelThreshold = 75.0,
+    CollisionCancel = {
+        Enabled = true,
+        EngagementGraceMs = 1000,
+        CorroborationWindowMs = 750,
+        SampleIntervalMs = 10,
+        ContactReleaseMs = 150,
+        MinimumImpactSpeedMph = 2.0,
+        MinimumSpeedDropMph = 2.0,
+        MinimumHealthLoss = 1.0
+    },
+    AdaptiveFollowing = {
+        Enabled = true,
+        ProbeIntervalMs = 150,
+        MaxPendingProbeDrains = 4,
+        ProbeRadiusMeters = 1.75,
+        MinLookAheadMeters = 10.0,
+        MaxLookAheadMeters = 30.0,
+        LookAheadBufferMeters = 3.0,
+        MinimumGapMeters = 6.0,
+        TimeGapSeconds = 1.0,
+        LeadLostGraceMs = 500,
+        MinimumHeadingAlignment = 0.5,
+        SlowDownRateMphPerSecond = 30.0,
+        RecoveryRateMphPerSecond = 8.0
+    },
+    BoatEngineRpm = {
+        Enabled = true,
+        MinRpm = 0.35,
+        MaxRpm = 0.85
+    },
     ExternalResourceCheck = {
         Enabled = false,
         CacheMs = 1000,
@@ -208,25 +242,133 @@ Config.CruiseControl = {
         [5] = true,
         [6] = true,
         [7] = true,
+        [8] = true,
         [9] = true,
         [10] = true,
         [11] = true,
         [12] = true,
+        [13] = true,
+        [14] = true,
         [17] = true,
-        [20] = true
+        [18] = true,
+        [19] = true,
+        [20] = true,
+        [21] = true,
+        [22] = true
     }
 }
 ```
 
-Cruise stores the current forward speed. Brake, handbrake, reverse, engine shutdown, leaving the driver seat, changing vehicles, unsupported controls, and significant vehicle damage cancel it. Pressing the accelerator temporarily restores the vehicle's normal maximum speed; releasing it returns to the cruise target. Cruise is client-owned and is not synchronized to other players.
+Cruise stores the current forward speed. For boats, it uses the horizontal forward speed so pitch and wave motion do not inflate the set point. Brake, handbrake, reverse, engine shutdown, loss of network control, leaving the driver seat, changing vehicles, unsupported controls, significant vehicle damage, and a corroborated impact cancel it. Pressing the accelerator temporarily restores the vehicle's normal maximum speed; releasing it returns to the current cruise target. Cruise is client-owned and is not synchronized to other players.
 
-Cruise uses the reliable per-frame grounded forward-speed correction found in Qbox-style implementations. Instead of maintaining one mathematically exact speed, its internal hold target moves slowly between `HoldOffsetMph` and `HoldOffsetMph + HoldVariationMph` below the displayed set point. `HoldVariationPeriodMs` controls how quickly that subtle variation cycles.
+Road vehicles use the reliable per-frame grounded forward-speed correction found in Qbox-style implementations. They also use one bounded, asynchronous vehicle-only capsule probe at `ProbeIntervalMs` intervals. A pending probe is polled until FiveM reports terminal status 0 or 2; stopping or replacing cruise transfers that handle to a background drain queue instead of abandoning it. `MaxPendingProbeDrains` bounds that queue and temporarily defers new probes when all slots are occupied. When a slower, similarly aligned vehicle is detected ahead, the effective hold and limiter target moves toward the lead vehicle's speed. `MinimumGapMeters + current speed * TimeGapSeconds` determines the desired following gap; the target drops below the lead speed when that gap is too small. `SlowDownRateMphPerSecond` controls how quickly the target is reduced, while the lower `RecoveryRateMphPerSecond` restores the set speed smoothly after the path clears. `LeadLostGraceMs` filters brief missed probes.
 
-`CorrectionToleranceMph` prevents tiny sub-pixel corrections, while `OverspeedAllowanceMph` permits a little natural downhill gain. Corrections pause while steering by default and only run while all wheels are grounded.
+The FiveM vehicle-intersection trace used by adaptive following has an approximately 30-meter mission-entity range, so runtime lookahead is hard-limited to 30 meters even if `MaxLookAheadMeters` is configured higher. This makes adaptive following a convenience aid rather than emergency braking, especially at high speed. It only runs for powered road classes; boats, bicycles, trains, and aircraft do not use it. While following, the resource applies the same bounded slowdown rate directly to the road vehicle's forward velocity while preserving lateral and vertical motion. Keep `UseSpeedLimiter = true` so the engine-speed ceiling follows that effective target too; disabling it leaves the direct slowdown active but removes the extra limiter bound.
+
+`CollisionCancel` avoids cancelling from ordinary road and wheel contact by waiting `EngagementGraceMs` after activation and requiring GTA's collision state plus either `MinimumSpeedDropMph` or `MinimumHealthLoss`. Each contact episode captures the sample immediately before impact, then accumulates losses over the rolling `CorroborationWindowMs`, so sustained scraping or pushing can cancel even when no single frame crosses a threshold. `ContactReleaseMs` bridges brief observed collision-signal gaps without carrying evidence into a later unrelated contact. `SampleIntervalMs` keeps the rolling history frame-rate independent; runtime sampling may be coarsened for unusually large windows so the defensive 120-sample cap is retained. Forward-speed reductions deliberately commanded by adaptive following are subtracted from that evidence, preventing the controller's own slowdown from looking like an impact. This also catches lower-damage collisions that do not reach `DamageCancelThreshold`. Set `CollisionCancel.Enabled = false` to retain only the original damage threshold and control-based cancellation.
+
+Boats use a water-only horizontal correction that preserves lateral drift and vertical velocity, allowing GTA's buoyancy and wave physics to remain in control. Instead of maintaining one mathematically exact speed, the internal hold target moves slowly between `HoldOffsetMph` and `HoldOffsetMph + HoldVariationMph` below the displayed set point. `HoldVariationPeriodMs` controls how quickly that subtle variation cycles.
+
+For believable boat engine audio, cruise captures the engine RPM at engagement, clamps it between `BoatEngineRpm.MinRpm` and `BoatEngineRpm.MaxRpm`, and holds it while the real accelerator is released. Actual accelerator input takes over immediately, and cancellation returns RPM control to GTA. Set `BoatEngineRpm.Enabled = false` to disable this behavior. RPM-aware HUD and fuel resources will observe the held value as normal engine load.
+
+`CorrectionToleranceMph` prevents tiny sub-pixel corrections, while `OverspeedAllowanceMph` permits a little natural downhill gain. Ordinary speed recovery pauses while steering by default, but adaptive safety slowdown remains active. Road corrections only run while all wheels are grounded; boat corrections only run while the vessel is in water.
 
 Set `SpeedCorrection = false` if another handling resource should own vehicle velocity. Set `UseSpeedLimiter = false` if another resource owns `SetVehicleMaxSpeed`.
 
 Set `ExternalResourceCheck.Enabled = true` on Qbox or QBCore servers where another resource owns cruise control. While any configured resource is started, the touchscreen cruise button is hidden and an active `drs_vehcontrol` cruise session is cancelled cleanly. The defaults recognize the stock `qbx_smallresources` and `qb-smallresources` cruise implementations; add renamed or custom cruise resource names to `Resources` as needed. This is a resource-ownership check because those stock implementations do not expose their active cruise state.
+
+Aircraft classes 15 and 16 are intentionally excluded from ordinary cruise control by default. They use the waypoint autopilot below, and the two systems cancel one another if their class settings are customized to overlap.
+
+### Aircraft Waypoint Autopilot
+
+```lua
+Config.Autopilot = {
+    MinActivationHeight = 10.0,
+    MinTerrainClearance = 30.0,
+    DamageCancelThreshold = 75.0,
+    ManualInputThreshold = 0.20,
+    ManualInputGraceMs = 500,
+    UiCloseInputGraceMs = 250,
+    CancelControls = {
+        59, 60, 61, 62, 71, 72,
+        87, 88, 89, 90,
+        107, 108, 109, 110, 111, 112,
+        119, 122, 352
+    },
+    AllowedClasses = {
+        [15] = true,
+        [16] = true
+    },
+    Plane = {
+        MinSpeedMph = 60.0,
+        MaxSpeedMph = 250.0,
+        MinWaypointDistance = 500.0,
+        ArrivalRadius = 300.0,
+        MinTerrainClearance = 100.0,
+        OrbitEntryRadius = 1200.0,
+        OrbitEntryMargin = 400.0,
+        OrbitEntryLeadSeconds = 10.0,
+        OrbitMinRadius = 700.0,
+        OrbitMaxBankDegrees = 25.0,
+        OrbitLeadDegrees = 60.0,
+        OrbitTerrainSamples = 12,
+        OrbitAdvanceDistance = 300.0,
+        OrbitTaskReachedDistance = 75.0,
+        OrbitAltitudeBuffer = 100.0,
+        OrbitAltitudeTolerance = 10.0,
+        OrbitTaskRefreshMs = 3000,
+        OrbitPointTimeoutMs = 15000,
+        OrbitAltitudeAssistMaxClimbMps = 8.0,
+        OrbitEmergencyTerrainClearance = 75.0,
+        OrbitEmergencyClimbRateMps = 12.0
+    },
+    Helicopter = {
+        MinSpeedMph = 10.0,
+        WaypointSpeedMph = 35.0,
+        MaxSpeedMph = 120.0,
+        MinWaypointDistance = 50.0,
+        ArrivalRadius = 25.0,
+        SlowDownDistance = 100.0,
+        HoldRefreshMs = 2500,
+        HoldRadius = 3.0,
+        HoldSpeedMph = 5.0,
+        HorizontalControl = {
+            Enabled = true,
+            AccelerationMps2 = 3.0,
+            DecelerationMps2 = 5.0,
+            YawRateDegPerSecond = 45.0,
+            YawDeadzoneDegrees = 1.0,
+            MinimumAlignment = 0.15,
+            VelocityDeadzoneMps = 0.05,
+            MaxDeltaTimeSeconds = 0.05
+        },
+        VerticalControl = {
+            Enabled = true,
+            Gain = 0.35,
+            DeadzoneMeters = 1.0,
+            MaxClimbMps = 5.0,
+            MaxDescentMps = 3.0
+        },
+        HoverMinActivationHeight = 2.0,
+        HoverSpeedMph = 2.0,
+        HoverRadius = 2.0,
+        HoverSlowDownDistance = 15.0,
+        HoverRefreshMs = 1000
+    }
+}
+```
+
+Autopilot is available to the driver of a running, driveable plane or helicopter after a map waypoint is set. In the Vehicle tab, Autopilot replaces Cruise for supported aircraft. Activation must be above `MinActivationHeight` from the ground or calm water surface; planes must already meet `Plane.MinSpeedMph`, and the waypoint must be at least the configured minimum horizontal distance away. Helicopters can engage waypoint flight from a hover or very low speed with no forward-speed activation requirement. `Helicopter.WaypointSpeedMph` is the commanded forward travel speed, while `MinSpeedMph` remains its lower command bound. Speeds are MPH. Heights, waypoint distances, and arrival radii are meters.
+
+Planes capture their current world altitude and fly toward the waypoint. Orbit entry begins at the largest of `OrbitEntryRadius`, the speed-based `OrbitEntryLeadSeconds` distance, or the calculated turn radius plus `OrbitEntryMargin`. The resource establishes a terrain-safe hold altitude using `MinTerrainClearance` and `OrbitAltitudeBuffer`, preserves the plane's arrival speed, and guides it around speed-adaptive moving GOTO points instead of handing it to GTA's native circle mission. Initial orbit altitude samples the waypoint center plus `OrbitTerrainSamples` evenly spaced points around the speed-scaled ring, and every moving target is rechecked against terrain before it is issued. `OrbitMinRadius`, `OrbitMaxBankDegrees`, and `OrbitLeadDegrees` shape the route; the advance-distance, reached-distance, refresh, and timeout settings control when the next point is issued. The altitude-assist and emergency-clearance settings add a final climb guard while orbiting so arrival does not pull the aircraft into the ground.
+
+Helicopters capture their current height above the ground or calm water surface and maintain that terrain-relative clearance instead of first climbing to `MinTerrainClearance`. Waypoint mode is controlled entirely by the resource: its deterministic horizontal controller turns the helicopter toward the marker and applies bounded forward velocity, while its vertical controller maintains the captured terrain-relative height. No native helicopter mission task controls the flight axes during waypoint travel. The controller slows near the destination and corrects toward a localized `HoldRadius` at `HoldSpeedMph`. `HorizontalControl` tunes acceleration, deceleration, yaw, alignment, velocity deadzone, and frame-time limits; `VerticalControl` tunes height correction gain, deadzone, climb, and descent limits. Both controller `Enabled` values must remain `true`; waypoint activation is rejected if either required controller is disabled. `Helicopter.HoldRefreshMs` controls how often waypoint state is refreshed.
+
+Helicopters also receive a separate Hover button on the Utility page. Hover can engage at any travel speed once airborne above `HoverMinActivationHeight`; it captures the current position, heading, world Z, and surface clearance. The native helicopter mission is used only for this Utility-page Hover mode and corrects back toward that fixed point at `HoverSpeedMph`. `HoverRadius`, `HoverSlowDownDistance`, and `HoverRefreshMs` tune how tightly and frequently the hold is corrected. Starting Hover replaces waypoint autopilot and starting waypoint autopilot replaces Hover.
+
+`CancelControls` contains GTA gameplay control IDs watched for pilot takeover. After `ManualInputGraceMs`, input at or above `ManualInputThreshold` cancels autopilot or Hover. A manual movement attempt while Hover is active releases Hover and shows one deterministic warning; normal activation and button deactivation stay silent. Frontend/NUI controls are not sampled, and `UiCloseInputGraceMs` lets the touchscreen close input clear without disengaging flight control. It also cancels when the aircraft lands, the driver leaves or changes vehicles, the engine stops, the aircraft becomes undriveable or unsupported, accumulated engine/body damage exceeds `DamageCancelThreshold`, ordinary cruise starts, or the resource stops. Pressing the active Autopilot or Hover button again cancels it manually.
+
+This is an experimental player-pilot feature. Planes combine GTA's aircraft mission tasks with resource-level orbit and altitude corrections; helicopter waypoint travel is solely resource-controlled, with a native helicopter mission reserved for Utility Hover. Direct waypoint travel still requires a clear route and does not guarantee obstacle avoidance. In-game testing is required for the aircraft models and server build you support; plane turns and helicopter hover stability can vary with handling data and native behavior.
 
 ### Leave Engine Running
 
@@ -373,6 +515,7 @@ Config.VehicleOverrides = {
         Enabled = true,
         Controls = {
             cruise = true,
+            autopilot = false,
             anchor = false,
             landingGear = false,
             roof = false,

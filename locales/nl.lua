@@ -57,6 +57,11 @@ Locales.nl = {
             interiorLight = 'Interieurlicht',
             cruiseSet = 'Cruise instellen',
             cruiseActive = 'Cruise {speed}',
+            autopilotStart = 'Autopilot starten',
+            autopilotEnRoute = 'Autopilot onderweg',
+            autopilotHolding = 'Autopilot in wachtstand',
+            hoverStart = 'Zweefstand starten',
+            hoverActive = 'Zweefstand actief',
             closeAll = 'Alles sluiten',
             allDown = 'Alles omlaag',
             allUp = 'Alles omhoog',
@@ -107,8 +112,14 @@ Locales.nl = {
         seatOccupied = 'Die zitplaats is bezet.',
         cannotAnchorHere = 'Hier kan niet worden geankerd.',
         anchorTooFast = 'Vertraag tot onder {speed} MPH voordat je het anker laat zakken.',
+        anchorMoveBlocked = 'Haal het anker op voordat je de boot probeert te verplaatsen.',
         cruiseUnavailable = 'Cruisecontrol is alleen beschikbaar wanneer je vooruit rijdt met een draaiende motor.',
-        cruiseSpeedRange = 'Cruisecontrol is beschikbaar tussen {min} en {max} MPH.'
+        cruiseSpeedRange = 'Cruisecontrol is beschikbaar tussen {min} en {max} MPH.',
+        autopilotNoWaypoint = 'Stel een waypoint op de kaart in voordat je de autopilot start.',
+        autopilotUnavailable = 'Voor de autopilot moet je in de lucht zijn, op de pilotenstoel zitten en de motor laten draaien.',
+        autopilotWaypointTooClose = 'Kies een waypoint op minstens {distance} meter afstand.',
+        autopilotPlaneTooSlow = 'Bereik minstens {speed} MPH voordat je de autopilot van het vliegtuig start.',
+        hoverReleasedByInput = 'De zweefstand is uitgeschakeld na besturingsinvoer van de piloot.'
     },
 
     fobMessages = {

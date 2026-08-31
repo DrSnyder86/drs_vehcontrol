@@ -57,6 +57,11 @@ Locales.en = {
             interiorLight = 'Interior Light',
             cruiseSet = 'Set Cruise',
             cruiseActive = 'Cruise {speed}',
+            autopilotStart = 'Start Autopilot',
+            autopilotEnRoute = 'Autopilot En Route',
+            autopilotHolding = 'Autopilot Holding',
+            hoverStart = 'Start Hover',
+            hoverActive = 'Hovering',
             closeAll = 'Close All',
             allDown = 'All Down',
             allUp = 'All Up',
@@ -107,8 +112,14 @@ Locales.en = {
         seatOccupied = 'That seat is occupied.',
         cannotAnchorHere = 'Cannot anchor here.',
         anchorTooFast = 'Slow below {speed} MPH before lowering the anchor.',
+        anchorMoveBlocked = 'Raise the anchor before trying to move the boat.',
         cruiseUnavailable = 'Cruise control is only available while driving forward with the engine running.',
-        cruiseSpeedRange = 'Cruise control is available between {min} and {max} MPH.'
+        cruiseSpeedRange = 'Cruise control is available between {min} and {max} MPH.',
+        autopilotNoWaypoint = 'Set a map waypoint before starting autopilot.',
+        autopilotUnavailable = 'Autopilot requires you to be airborne in the pilot seat with the engine running.',
+        autopilotWaypointTooClose = 'Choose a waypoint at least {distance} meters away.',
+        autopilotPlaneTooSlow = 'Reach at least {speed} MPH before starting plane autopilot.',
+        hoverReleasedByInput = 'Hover disengaged because pilot input was detected.'
     },
 
     fobMessages = {

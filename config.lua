@@ -200,6 +200,7 @@ Config.Controls = {
     hazards = true,
     interiorLight = true,
     cruise = true,
+    autopilot = true,
     anchor = true,
     landingGear = true,
     trailer = true,
@@ -208,7 +209,9 @@ Config.Controls = {
 }
 
 Config.BoatAnchor = {
-    MaxSpeedMph = 10.0
+    MaxSpeedMph = 10.0,
+    MoveAttemptNotifyCooldownMs = 1500,
+    MovementControls = { 61, 62, 71, 72 }
 }
 
 Config.CruiseControl = {
@@ -224,6 +227,41 @@ Config.CruiseControl = {
     PauseCorrectionWhileSteering = true,
     UseSpeedLimiter = true,
     DamageCancelThreshold = 75.0,
+    -- Collision cancellation needs GTA's collision flag plus speed or health loss over a rolling window.
+    -- Times are milliseconds, speed values are MPH, and health loss uses GTA vehicle-health points.
+    CollisionCancel = {
+        Enabled = true,
+        EngagementGraceMs = 1000,
+        CorroborationWindowMs = 750,
+        SampleIntervalMs = 10,
+        ContactReleaseMs = 150,
+        MinimumImpactSpeedMph = 2.0,
+        MinimumSpeedDropMph = 2.0,
+        MinimumHealthLoss = 1.0
+    },
+    -- Road vehicles follow a slower vehicle ahead. Distances are meters and rates are MPH per second.
+    -- FiveM vehicle-only shape probes are limited to roughly 30 meters and are drained to terminal status.
+    AdaptiveFollowing = {
+        Enabled = true,
+        ProbeIntervalMs = 150,
+        MaxPendingProbeDrains = 4,
+        ProbeRadiusMeters = 1.75,
+        MinLookAheadMeters = 10.0,
+        MaxLookAheadMeters = 30.0,
+        LookAheadBufferMeters = 3.0,
+        MinimumGapMeters = 6.0,
+        TimeGapSeconds = 1.0,
+        LeadLostGraceMs = 500,
+        MinimumHeadingAlignment = 0.5,
+        SlowDownRateMphPerSecond = 30.0,
+        RecoveryRateMphPerSecond = 8.0
+    },
+    -- Boats hold their engagement RPM for believable engine audio while velocity correction owns movement.
+    BoatEngineRpm = {
+        Enabled = true,
+        MinRpm = 0.35,
+        MaxRpm = 0.85
+    },
     -- When enabled, drs_vehcontrol yields cruise ownership while any listed resource is started.
     -- Add renamed or custom QB/Qbox cruise resources to this list.
     ExternalResourceCheck = {
@@ -250,14 +288,88 @@ Config.CruiseControl = {
         [12] = true, -- vans
         [13] = true, -- cycle
         [14] = true, -- boats
-        [15] = true, -- helicopters
-        [16] = true, -- planes
         [17] = true, -- service
         [18] = true, -- emergency
         [19] = true, -- military
         [20] = true, -- commercial
         [21] = true, -- trains
         [22] = true, -- opem wheel
+    }
+}
+
+Config.Autopilot = {
+    -- Altitudes and distances are meters. Speeds are MPH.
+    MinActivationHeight = 10.0,
+    MinTerrainClearance = 30.0,
+    DamageCancelThreshold = 75.0,
+    ManualInputThreshold = 0.20,
+    ManualInputGraceMs = 500,
+    UiCloseInputGraceMs = 250,
+    CancelControls = {
+        59, 60, 61, 62, 71, 72,
+        87, 88, 89, 90,
+        107, 108, 109, 110, 111, 112,
+        119, 122, 352
+    },
+    AllowedClasses = {
+        [15] = true, -- helicopters
+        [16] = true -- planes
+    },
+    Plane = {
+        MinSpeedMph = 60.0,
+        MaxSpeedMph = 250.0,
+        MinWaypointDistance = 500.0,
+        ArrivalRadius = 300.0,
+        MinTerrainClearance = 100.0,
+        OrbitEntryRadius = 1200.0,
+        OrbitEntryMargin = 400.0,
+        OrbitEntryLeadSeconds = 10.0,
+        OrbitMinRadius = 700.0,
+        OrbitMaxBankDegrees = 25.0,
+        OrbitLeadDegrees = 60.0,
+        OrbitTerrainSamples = 12,
+        OrbitAdvanceDistance = 300.0,
+        OrbitTaskReachedDistance = 75.0,
+        OrbitAltitudeBuffer = 100.0,
+        OrbitAltitudeTolerance = 10.0,
+        OrbitTaskRefreshMs = 3000,
+        OrbitPointTimeoutMs = 15000,
+        OrbitAltitudeAssistMaxClimbMps = 8.0,
+        OrbitEmergencyTerrainClearance = 75.0,
+        OrbitEmergencyClimbRateMps = 12.0
+    },
+    Helicopter = {
+        MinSpeedMph = 10.0,
+        WaypointSpeedMph = 35.0,
+        MaxSpeedMph = 120.0,
+        MinWaypointDistance = 50.0,
+        ArrivalRadius = 25.0,
+        SlowDownDistance = 100.0,
+        HoldRefreshMs = 2500,
+        HoldRadius = 3.0,
+        HoldSpeedMph = 5.0,
+        HorizontalControl = {
+            Enabled = true,
+            AccelerationMps2 = 3.0,
+            DecelerationMps2 = 5.0,
+            YawRateDegPerSecond = 45.0,
+            YawDeadzoneDegrees = 1.0,
+            MinimumAlignment = 0.15,
+            VelocityDeadzoneMps = 0.05,
+            MaxDeltaTimeSeconds = 0.05
+        },
+        VerticalControl = {
+            Enabled = true,
+            Gain = 0.35,
+            DeadzoneMeters = 1.0,
+            MaxClimbMps = 5.0,
+            MaxDescentMps = 3.0
+        },
+        HoverMinActivationHeight = 2.0,
+        HoverSpeedMph = 2.0,
+        HoverRadius = 2.0,
+        HoverSlowDownDistance = 15.0,
+        HoverRefreshMs = 1000
     }
 }
 
@@ -280,7 +392,7 @@ Config.RestrictedVehicleClasses = {
 Config.VehicleOverrides = {
     -- ['examplecar'] = {
     --     Enabled = true,
-    --     Controls = { cruise = true, anchor = false, landingGear = false, roof = false, extras = false },
+    --     Controls = { cruise = true, autopilot = false, anchor = false, landingGear = false, roof = false, extras = false },
     --     FobActions = { engine = true, trunk = false, windows = true },
     --     KeyFobMaxDistance = 25.0,
     --     Doors = { [4] = false, [5] = true },

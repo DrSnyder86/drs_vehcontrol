@@ -20,6 +20,53 @@ local cruiseLastEngineHealth = 0.0
 local cruiseLastBodyHealth = 0.0
 local cruiseLimiterApplied = false
 local cruiseStartedAt = 0
+local cruiseBoatEngineRpm = 0.0
+local cruiseRuntime = {
+    lastSpeed = 0.0,
+    adaptiveTargetSpeed = 0.0,
+    adaptiveLeadVehicle = 0,
+    adaptiveLeadSeenAt = 0,
+    adaptiveProbeHandle = 0,
+    adaptiveProbeStartedAt = 0,
+    adaptiveProbeNextAt = 0,
+    adaptiveProbeDistance = 0.0,
+    adaptiveLastUpdateAt = 0,
+    adaptiveProbeDrains = {},
+    adaptiveProbeDrainCount = 0,
+    collisionGraceUntil = 0,
+    collisionSamples = {},
+    commandedSlowdownTotal = 0.0,
+    collisionEpisodeBaseline = nil,
+    collisionContactLastSeenAt = 0,
+    collisionContactReleasedAt = 0,
+    roadClasses = {
+        [0] = true, [1] = true, [2] = true, [3] = true, [4] = true,
+        [5] = true, [6] = true, [7] = true, [8] = true, [9] = true,
+        [10] = true, [11] = true, [12] = true, [17] = true, [18] = true,
+        [19] = true, [20] = true, [22] = true
+    }
+}
+local autopilotVehicle = 0
+local autopilotPed = 0
+local autopilotMode = nil
+local autopilotBehavior = nil
+local autopilotTarget = nil
+local autopilotTargetSpeed = 0.0
+local autopilotFlightHeight = 0
+local autopilotLastSurfaceClearance = 0.0
+local autopilotPlaneHoldAltitude = 0.0
+local autopilotPlaneNavTarget = nil
+local autopilotPlaneOrbitDirection = 0
+local autopilotPlaneOrbitRadius = 0.0
+local autopilotPlaneOrbitPointAt = 0
+local autopilotTargetHeading = -1.0
+local autopilotPhase = nil
+local autopilotStartedAt = 0
+local autopilotInputGraceUntil = 0
+local autopilotLastTaskAt = 0
+local autopilotStartEngineHealth = 0.0
+local autopilotStartBodyHealth = 0.0
+local stopAutopilot
 local externalCruiseOwnerCache = false
 local externalCruiseOwnerCheckedAt = -100000
 local MPH_PER_MPS = 2.236936
@@ -318,6 +365,42 @@ local function isCruiseControlSupported(vehicle)
         and classSupportsControl(vehicle, 'cruise', Config.CruiseControl or {})
 end
 
+local function getAutopilotConfig()
+    return Config.Autopilot or {}
+end
+
+local function getAutopilotAircraftType(vehicle)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        return nil
+    end
+
+    local class = GetVehicleClass(vehicle)
+    local model = GetEntityModel(vehicle)
+
+    if IsThisModelAHeli(model) then
+        return 'helicopter'
+    end
+
+    if IsThisModelAPlane(model) then
+        return 'plane'
+    end
+
+    if class == 15 then
+        return 'helicopter'
+    end
+
+    if class == 16 then
+        return 'plane'
+    end
+
+    return nil
+end
+
+local function isAutopilotSupported(vehicle)
+    return getAutopilotAircraftType(vehicle) ~= nil
+        and classSupportsControl(vehicle, 'autopilot', getAutopilotConfig())
+end
+
 local function applyBoatAnchorState(vehicle, anchored)
     if anchored then
         SetBoatFrozenWhenAnchored(vehicle, true)
@@ -571,6 +654,525 @@ local function getCruiseHoldSpeed(config, targetSpeed)
     return math.max(0.0, targetSpeed - (offsetMph + variation) / MPH_PER_MPS)
 end
 
+local function isBoatCruiseVehicle(vehicle)
+    return GetVehicleClass(vehicle) == 14 or IsThisModelABoat(GetEntityModel(vehicle))
+end
+
+function cruiseRuntime.isAdaptiveRoadVehicle(vehicle)
+    return not isBoatCruiseVehicle(vehicle)
+        and cruiseRuntime.roadClasses[GetVehicleClass(vehicle)] == true
+end
+
+function cruiseRuntime.getAdaptiveDesiredGap(config, currentSpeed)
+    local minimumGap = math.max(0.0, tonumber(config.MinimumGapMeters) or 6.0)
+    local timeGap = math.max(0.1, tonumber(config.TimeGapSeconds) or 1.0)
+
+    return minimumGap + math.max(0.0, tonumber(currentSpeed) or 0.0) * timeGap
+end
+
+function cruiseRuntime.getAdaptiveTargetSpeed(config, setSpeed, currentSpeed, leadSpeed, leadDistance)
+    setSpeed = math.max(0.0, tonumber(setSpeed) or 0.0)
+    leadSpeed = tonumber(leadSpeed)
+    leadDistance = tonumber(leadDistance)
+
+    if leadSpeed == nil or leadDistance == nil then
+        return setSpeed
+    end
+
+    leadSpeed = math.max(0.0, leadSpeed)
+
+    if setSpeed <= leadSpeed then
+        return setSpeed
+    end
+
+    local timeGap = math.max(0.1, tonumber(config.TimeGapSeconds) or 1.0)
+    local gapError = leadDistance - cruiseRuntime.getAdaptiveDesiredGap(config, currentSpeed)
+    local desiredSpeed = leadSpeed + gapError / timeGap
+
+    return math.max(0.0, math.min(setSpeed, desiredSpeed))
+end
+
+function cruiseRuntime.stepAdaptiveTargetSpeed(config, currentSpeed, targetSpeed, deltaSeconds)
+    currentSpeed = math.max(0.0, tonumber(currentSpeed) or 0.0)
+    targetSpeed = math.max(0.0, tonumber(targetSpeed) or 0.0)
+    deltaSeconds = math.max(0.0, tonumber(deltaSeconds) or 0.0)
+
+    if currentSpeed == targetSpeed or deltaSeconds <= 0.0 then
+        return currentSpeed
+    end
+
+    local rateMphPerSecond
+
+    if targetSpeed < currentSpeed then
+        rateMphPerSecond = math.max(0.0, tonumber(config.SlowDownRateMphPerSecond) or 30.0)
+    else
+        rateMphPerSecond = math.max(0.0, tonumber(config.RecoveryRateMphPerSecond) or 8.0)
+    end
+
+    local maximumStep = rateMphPerSecond / 2.236936 * deltaSeconds
+
+    if targetSpeed < currentSpeed then
+        return math.max(targetSpeed, currentSpeed - maximumStep)
+    end
+
+    return math.min(targetSpeed, currentSpeed + maximumStep)
+end
+
+function cruiseRuntime.handoffAdaptiveProbe()
+    local handle = cruiseRuntime.adaptiveProbeHandle
+
+    if handle ~= 0 and cruiseRuntime.adaptiveProbeDrains[handle] ~= true then
+        cruiseRuntime.adaptiveProbeDrains[handle] = true
+        cruiseRuntime.adaptiveProbeDrainCount = cruiseRuntime.adaptiveProbeDrainCount + 1
+    end
+
+    cruiseRuntime.adaptiveProbeHandle = 0
+    cruiseRuntime.adaptiveProbeStartedAt = 0
+    cruiseRuntime.adaptiveProbeDistance = 0.0
+end
+
+function cruiseRuntime.reset()
+    cruiseRuntime.handoffAdaptiveProbe()
+    cruiseRuntime.lastSpeed = 0.0
+    cruiseRuntime.adaptiveTargetSpeed = 0.0
+    cruiseRuntime.adaptiveLeadVehicle = 0
+    cruiseRuntime.adaptiveLeadSeenAt = 0
+    cruiseRuntime.adaptiveProbeHandle = 0
+    cruiseRuntime.adaptiveProbeStartedAt = 0
+    cruiseRuntime.adaptiveProbeNextAt = 0
+    cruiseRuntime.adaptiveProbeDistance = 0.0
+    cruiseRuntime.adaptiveLastUpdateAt = 0
+    cruiseRuntime.collisionGraceUntil = 0
+    cruiseRuntime.collisionSamples = {}
+    cruiseRuntime.commandedSlowdownTotal = 0.0
+    cruiseRuntime.collisionEpisodeBaseline = nil
+    cruiseRuntime.collisionContactLastSeenAt = 0
+    cruiseRuntime.collisionContactReleasedAt = 0
+end
+
+local function getHorizontalForwardMotion(vehicle)
+    local velocity = GetEntityVelocity(vehicle)
+    local forward = GetEntityForwardVector(vehicle)
+    local horizontalLength = math.sqrt(forward.x * forward.x + forward.y * forward.y)
+
+    if horizontalLength < 0.001 then
+        return nil
+    end
+
+    local forwardX = forward.x / horizontalLength
+    local forwardY = forward.y / horizontalLength
+    local forwardSpeed = velocity.x * forwardX + velocity.y * forwardY
+
+    return forwardSpeed, velocity, forwardX, forwardY
+end
+
+function cruiseRuntime.getCollisionSpeed(vehicle)
+    local forwardSpeed = getHorizontalForwardMotion(vehicle)
+
+    if forwardSpeed ~= nil then
+        return math.max(0.0, forwardSpeed)
+    end
+
+    return GetEntitySpeed(vehicle)
+end
+
+local function getCruiseSetSpeed(vehicle)
+    if isBoatCruiseVehicle(vehicle) then
+        local forwardSpeed = getHorizontalForwardMotion(vehicle)
+
+        if forwardSpeed then
+            return math.max(0.0, forwardSpeed)
+        end
+    end
+
+    return GetEntitySpeed(vehicle)
+end
+
+function cruiseRuntime.getAdaptiveLeadData(vehicle, leadVehicle, config, maximumDistance)
+    if leadVehicle == 0
+        or leadVehicle == vehicle
+        or not DoesEntityExist(leadVehicle)
+        or not IsEntityAVehicle(leadVehicle)
+    then
+        return nil
+    end
+
+    local vehicleCoords = GetEntityCoords(vehicle)
+    local leadCoords = GetEntityCoords(leadVehicle)
+    local forward = GetEntityForwardVector(vehicle)
+    local forwardLength = math.sqrt(forward.x * forward.x + forward.y * forward.y)
+
+    if forwardLength < 0.001 then
+        return nil
+    end
+
+    local forwardX = forward.x / forwardLength
+    local forwardY = forward.y / forwardLength
+    local offsetX = leadCoords.x - vehicleCoords.x
+    local offsetY = leadCoords.y - vehicleCoords.y
+    local longitudinalDistance = offsetX * forwardX + offsetY * forwardY
+
+    if longitudinalDistance <= 0.0 then
+        return nil
+    end
+
+    local leadForward = GetEntityForwardVector(leadVehicle)
+    local leadForwardLength = math.sqrt(leadForward.x * leadForward.x + leadForward.y * leadForward.y)
+
+    if leadForwardLength < 0.001 then
+        return nil
+    end
+
+    local headingAlignment = forwardX * (leadForward.x / leadForwardLength)
+        + forwardY * (leadForward.y / leadForwardLength)
+    local minimumAlignment = math.max(-1.0, math.min(
+        1.0,
+        tonumber(config.MinimumHeadingAlignment) or 0.5
+    ))
+
+    if headingAlignment < minimumAlignment then
+        return nil
+    end
+
+    local _, vehicleMaximum = GetModelDimensions(GetEntityModel(vehicle))
+    local leadMinimum = GetModelDimensions(GetEntityModel(leadVehicle))
+    local vehicleFront = vehicleMaximum and math.max(0.0, vehicleMaximum.y) or 0.0
+    local leadRear = leadMinimum and math.max(0.0, -leadMinimum.y) or 0.0
+    local gapDistance = math.max(0.0, longitudinalDistance - vehicleFront - leadRear)
+
+    if maximumDistance and gapDistance > maximumDistance then
+        return nil
+    end
+
+    local leadVelocity = GetEntityVelocity(leadVehicle)
+    local leadSpeed = math.max(0.0, leadVelocity.x * forwardX + leadVelocity.y * forwardY)
+
+    return leadSpeed, gapDistance
+end
+
+function cruiseRuntime.getAdaptiveLookAhead(config, currentSpeed)
+    local configuredMaximum = math.max(1.0, tonumber(config.MaxLookAheadMeters) or 30.0)
+    local maximumLookAhead = math.min(30.0, configuredMaximum)
+    local minimumLookAhead = math.min(
+        maximumLookAhead,
+        math.max(1.0, tonumber(config.MinLookAheadMeters) or 10.0)
+    )
+    local buffer = math.max(0.0, tonumber(config.LookAheadBufferMeters) or 3.0)
+
+    return math.min(
+        maximumLookAhead,
+        math.max(minimumLookAhead, cruiseRuntime.getAdaptiveDesiredGap(config, currentSpeed) + buffer)
+    )
+end
+
+function cruiseRuntime.startAdaptiveProbe(config, vehicle, currentSpeed, now)
+    local lookAhead = cruiseRuntime.getAdaptiveLookAhead(config, currentSpeed)
+    local probeRadius = math.max(0.25, math.min(
+        4.0,
+        tonumber(config.ProbeRadiusMeters) or 1.75
+    ))
+    local coords = GetEntityCoords(vehicle)
+    local forward = GetEntityForwardVector(vehicle)
+    local startZ = coords.z + 0.25
+
+    cruiseRuntime.adaptiveProbeHandle = StartShapeTestCapsule(
+        coords.x,
+        coords.y,
+        startZ,
+        coords.x + forward.x * lookAhead,
+        coords.y + forward.y * lookAhead,
+        startZ + forward.z * lookAhead,
+        probeRadius,
+        2,
+        vehicle,
+        7
+    ) or 0
+    cruiseRuntime.adaptiveProbeStartedAt = now
+    cruiseRuntime.adaptiveProbeDistance = lookAhead
+    cruiseRuntime.adaptiveProbeNextAt = now + math.max(
+        50,
+        math.floor(tonumber(config.ProbeIntervalMs) or 150)
+    )
+end
+
+function cruiseRuntime.updateAdaptiveProbe(config, vehicle, currentSpeed, now)
+    if cruiseRuntime.adaptiveProbeHandle ~= 0 then
+        local status, hit, hitPosition, surfaceNormal, hitEntity = GetShapeTestResult(
+            cruiseRuntime.adaptiveProbeHandle
+        )
+
+        if status == 2 then
+            cruiseRuntime.adaptiveProbeHandle = 0
+            cruiseRuntime.adaptiveProbeStartedAt = 0
+
+            if (hit == true or hit == 1) and hitEntity and hitEntity ~= 0 then
+                local maximumDistance = cruiseRuntime.adaptiveProbeDistance
+                    + math.max(0.25, tonumber(config.ProbeRadiusMeters) or 1.75)
+                local leadSpeed = cruiseRuntime.getAdaptiveLeadData(
+                    vehicle,
+                    hitEntity,
+                    config,
+                    maximumDistance
+                )
+
+                if leadSpeed ~= nil then
+                    cruiseRuntime.adaptiveLeadVehicle = hitEntity
+                    cruiseRuntime.adaptiveLeadSeenAt = now
+                end
+            end
+        elseif status == 0 then
+            cruiseRuntime.adaptiveProbeHandle = 0
+            cruiseRuntime.adaptiveProbeStartedAt = 0
+        end
+    end
+
+    local maximumDrains = math.max(1, math.min(
+        8,
+        math.floor(tonumber(config.MaxPendingProbeDrains) or 4)
+    ))
+
+    if cruiseRuntime.adaptiveProbeHandle == 0
+        and now >= cruiseRuntime.adaptiveProbeNextAt
+        and cruiseRuntime.adaptiveProbeDrainCount < maximumDrains
+    then
+        cruiseRuntime.startAdaptiveProbe(config, vehicle, currentSpeed, now)
+    end
+end
+
+function cruiseRuntime.updateAdaptiveFollowing(config, vehicle, currentSpeed, now)
+    local adaptiveConfig = config.AdaptiveFollowing
+
+    if type(adaptiveConfig) ~= 'table'
+        or adaptiveConfig.Enabled == false
+        or not cruiseRuntime.isAdaptiveRoadVehicle(vehicle)
+    then
+        cruiseRuntime.handoffAdaptiveProbe()
+        cruiseRuntime.adaptiveLeadVehicle = 0
+        cruiseRuntime.adaptiveLeadSeenAt = 0
+        cruiseRuntime.adaptiveProbeNextAt = 0
+        cruiseRuntime.adaptiveTargetSpeed = cruiseTargetSpeed
+        cruiseRuntime.adaptiveLastUpdateAt = now
+        return cruiseTargetSpeed
+    end
+
+    cruiseRuntime.updateAdaptiveProbe(adaptiveConfig, vehicle, currentSpeed, now)
+
+    local leadSpeed
+    local leadDistance
+    local leadLostGrace = math.max(
+        0,
+        math.floor(tonumber(adaptiveConfig.LeadLostGraceMs) or 500)
+    )
+    local maximumDistance = cruiseRuntime.getAdaptiveLookAhead(adaptiveConfig, currentSpeed)
+        + math.max(0.25, tonumber(adaptiveConfig.ProbeRadiusMeters) or 1.75)
+
+    if cruiseRuntime.adaptiveLeadVehicle ~= 0
+        and now - cruiseRuntime.adaptiveLeadSeenAt <= leadLostGrace
+    then
+        leadSpeed, leadDistance = cruiseRuntime.getAdaptiveLeadData(
+            vehicle,
+            cruiseRuntime.adaptiveLeadVehicle,
+            adaptiveConfig,
+            maximumDistance
+        )
+    end
+
+    if leadSpeed == nil then
+        cruiseRuntime.adaptiveLeadVehicle = 0
+        cruiseRuntime.adaptiveLeadSeenAt = 0
+    end
+
+    local desiredSpeed = cruiseRuntime.getAdaptiveTargetSpeed(
+        adaptiveConfig,
+        cruiseTargetSpeed,
+        currentSpeed,
+        leadSpeed,
+        leadDistance
+    )
+    local deltaSeconds = cruiseRuntime.adaptiveLastUpdateAt > 0
+        and math.min(0.1, math.max(
+            0.0,
+            (now - cruiseRuntime.adaptiveLastUpdateAt) / 1000.0
+        ))
+        or 0.0
+
+    cruiseRuntime.adaptiveTargetSpeed = cruiseRuntime.stepAdaptiveTargetSpeed(
+        adaptiveConfig,
+        cruiseRuntime.adaptiveTargetSpeed,
+        desiredSpeed,
+        deltaSeconds
+    )
+    cruiseRuntime.adaptiveLastUpdateAt = now
+
+    return cruiseRuntime.adaptiveTargetSpeed
+end
+
+function cruiseRuntime.recordCollisionSample(config, now, currentSpeed, engineHealth, bodyHealth, forceSample)
+    local sample = {
+        at = now,
+        speed = math.max(0.0, tonumber(currentSpeed) or 0.0),
+        engineHealth = tonumber(engineHealth) or 0.0,
+        bodyHealth = tonumber(bodyHealth) or 0.0,
+        commandedSlowdown = cruiseRuntime.commandedSlowdownTotal
+    }
+    local samples = cruiseRuntime.collisionSamples
+    local windowMs = math.max(
+        100,
+        math.floor(tonumber(config.CorroborationWindowMs) or 750)
+    )
+    local sampleIntervalMs = math.max(
+        1,
+        math.floor(tonumber(config.SampleIntervalMs) or 10),
+        math.ceil(windowMs / 100)
+    )
+    local previousSample = samples[#samples]
+
+    if not forceSample and previousSample and now - previousSample.at < sampleIntervalMs then
+        samples[#samples] = sample
+    else
+        samples[#samples + 1] = sample
+    end
+
+    local cutoff = now - windowMs
+
+    while #samples > 1 and samples[1].at < cutoff do
+        table.remove(samples, 1)
+    end
+
+    while #samples > 120 do
+        table.remove(samples, 1)
+    end
+
+    return samples, sample
+end
+
+function cruiseRuntime.shouldCancelForCollision(config, vehicle, now, currentSpeed, engineHealth, bodyHealth)
+    local collisionConfig = type(config.CollisionCancel) == 'table' and config.CollisionCancel or config
+
+    if type(collisionConfig) ~= 'table' or collisionConfig.Enabled == false then
+        return false
+    end
+
+    local collided = HasEntityCollidedWithAnything(vehicle)
+    local releaseMs = math.max(
+        0,
+        math.floor(tonumber(collisionConfig.ContactReleaseMs) or 150)
+    )
+
+    if collided
+        and (cruiseRuntime.collisionContactReleasedAt or 0) > 0
+        and now - (cruiseRuntime.collisionContactReleasedAt or 0) > releaseMs
+    then
+        cruiseRuntime.collisionEpisodeBaseline = nil
+        cruiseRuntime.collisionContactLastSeenAt = 0
+    end
+
+    local newEpisode = collided and cruiseRuntime.collisionEpisodeBaseline == nil
+    local samples, sample = cruiseRuntime.recordCollisionSample(
+        collisionConfig,
+        now,
+        currentSpeed,
+        engineHealth,
+        bodyHealth,
+        newEpisode
+    )
+
+    if not collided then
+        if cruiseRuntime.collisionEpisodeBaseline ~= nil then
+            if (cruiseRuntime.collisionContactReleasedAt or 0) == 0 then
+                cruiseRuntime.collisionContactReleasedAt = now
+            elseif now - (cruiseRuntime.collisionContactReleasedAt or 0) > releaseMs then
+                cruiseRuntime.collisionEpisodeBaseline = nil
+                cruiseRuntime.collisionContactLastSeenAt = 0
+                cruiseRuntime.collisionContactReleasedAt = 0
+            end
+        end
+
+        return false
+    end
+
+    if newEpisode then
+        cruiseRuntime.collisionEpisodeBaseline = samples[#samples - 1] or sample
+    end
+
+    cruiseRuntime.collisionContactLastSeenAt = now
+    cruiseRuntime.collisionContactReleasedAt = 0
+
+    local baseline = cruiseRuntime.collisionEpisodeBaseline
+
+    if samples[1].at > baseline.at then
+        baseline = samples[1]
+        cruiseRuntime.collisionEpisodeBaseline = baseline
+    end
+
+    if now < cruiseRuntime.collisionGraceUntil then
+        return false
+    end
+
+    local minimumImpactSpeed = math.max(
+        0.0,
+        tonumber(collisionConfig.MinimumImpactSpeedMph) or 2.0
+    ) / MPH_PER_MPS
+
+    if baseline.speed < minimumImpactSpeed then
+        return false
+    end
+
+    local minimumSpeedDrop = math.max(
+        0.0,
+        tonumber(collisionConfig.MinimumSpeedDropMph) or 2.0
+    ) / MPH_PER_MPS
+    local minimumHealthLoss = math.max(
+        0.0,
+        tonumber(collisionConfig.MinimumHealthLoss) or 1.0
+    )
+    local commandedSlowdown = math.max(
+        0.0,
+        sample.commandedSlowdown - baseline.commandedSlowdown
+    )
+    local speedDrop = baseline.speed - sample.speed - commandedSlowdown
+    local healthLoss = math.max(
+        baseline.engineHealth - sample.engineHealth,
+        baseline.bodyHealth - sample.bodyHealth
+    )
+    local speedCorroborated = minimumSpeedDrop > 0.0 and speedDrop >= minimumSpeedDrop
+    local healthCorroborated = minimumHealthLoss > 0.0 and healthLoss >= minimumHealthLoss
+
+    if minimumSpeedDrop <= 0.0 and minimumHealthLoss <= 0.0 then
+        return true
+    end
+
+    return speedCorroborated or healthCorroborated
+end
+
+local function getBoatCruiseEngineRpm(config, vehicle)
+    local rpmConfig = config.BoatEngineRpm
+
+    if rpmConfig == false or (type(rpmConfig) == 'table' and rpmConfig.Enabled == false) then
+        return nil
+    end
+
+    rpmConfig = type(rpmConfig) == 'table' and rpmConfig or {}
+
+    local minRpm = math.min(1.0, math.max(0.0, tonumber(rpmConfig.MinRpm) or 0.35))
+    local maxRpm = math.min(1.0, math.max(minRpm, tonumber(rpmConfig.MaxRpm) or 0.85))
+    local currentRpm = tonumber(GetVehicleCurrentRpm(vehicle)) or 0.0
+
+    return math.min(maxRpm, math.max(minRpm, currentRpm))
+end
+
+local function applyBoatCruiseEngineRpm(config, vehicle)
+    if config.BoatEngineRpm == false
+        or cruiseBoatEngineRpm <= 0.0
+        or not isBoatCruiseVehicle(vehicle)
+        or not IsEntityInWater(vehicle)
+    then
+        return
+    end
+
+    SetVehicleCurrentRpm(vehicle, cruiseBoatEngineRpm)
+end
+
 local function applyCruiseCorrection(config, vehicle, currentSpeed, targetSpeed, steering)
     if config.SpeedCorrection == false then
         return
@@ -580,9 +1182,68 @@ local function applyCruiseCorrection(config, vehicle, currentSpeed, targetSpeed,
     local holdSpeed = getCruiseHoldSpeed(config, targetSpeed)
     local tolerance = math.max(0.0, tonumber(config.CorrectionToleranceMph) or 0.05) / MPH_PER_MPS
 
-    if not IsVehicleOnAllWheels(vehicle)
-        or (pauseWhileSteering and steering)
+    if isBoatCruiseVehicle(vehicle) then
+        if pauseWhileSteering and steering then
+            return
+        end
+
+        if not IsEntityInWater(vehicle) then
+            return
+        end
+
+        local forwardSpeed, velocity, forwardX, forwardY = getHorizontalForwardMotion(vehicle)
+
+        if forwardSpeed and forwardSpeed < holdSpeed - tolerance then
+            local correction = holdSpeed - forwardSpeed
+
+            SetEntityVelocity(
+                vehicle,
+                velocity.x + forwardX * correction,
+                velocity.y + forwardY * correction,
+                velocity.z
+            )
+        end
+
+        return
+    end
+
+    if not IsVehicleOnAllWheels(vehicle) then
+        return
+    end
+
+    local adaptiveConfig = config.AdaptiveFollowing
+
+    if cruiseRuntime.adaptiveLeadVehicle ~= 0
+        and type(adaptiveConfig) == 'table'
+        and targetSpeed < cruiseTargetSpeed - tolerance
     then
+        local forwardSpeed, velocity, forwardX, forwardY = getHorizontalForwardMotion(vehicle)
+
+        if forwardSpeed and forwardSpeed > holdSpeed + tolerance then
+            local slowDownRate = math.max(
+                0.0,
+                tonumber(adaptiveConfig.SlowDownRateMphPerSecond) or 30.0
+            ) / MPH_PER_MPS
+            local frameTime = math.max(0.0, GetFrameTime())
+            local maximumReduction = slowDownRate * math.min(0.1, frameTime)
+            local nextForwardSpeed = math.max(holdSpeed, forwardSpeed - maximumReduction)
+            local correction = nextForwardSpeed - forwardSpeed
+
+            cruiseRuntime.commandedSlowdownTotal = cruiseRuntime.commandedSlowdownTotal
+                + math.max(0.0, -correction)
+
+            SetEntityVelocity(
+                vehicle,
+                velocity.x + forwardX * correction,
+                velocity.y + forwardY * correction,
+                velocity.z
+            )
+
+            return
+        end
+    end
+
+    if pauseWhileSteering and steering then
         return
     end
 
@@ -596,6 +1257,25 @@ local function isGameplayControlPressed(control)
         or IsDisabledControlPressed(0, control)
         or IsControlPressed(2, control)
         or IsDisabledControlPressed(2, control)
+end
+
+local defaultBoatAnchorMovementControls = { 61, 62, 71, 72 }
+
+local function isBoatAnchorMovementInputPressed()
+    local anchorConfig = Config.BoatAnchor or {}
+    local controls = type(anchorConfig.MovementControls) == 'table'
+        and anchorConfig.MovementControls
+        or defaultBoatAnchorMovementControls
+
+    for _, configuredControl in ipairs(controls) do
+        local control = tonumber(configuredControl)
+
+        if control and (IsControlPressed(0, control) or IsDisabledControlPressed(0, control)) then
+            return true
+        end
+    end
+
+    return false
 end
 
 local function stopCruiseControl(reason, emitAction)
@@ -613,6 +1293,8 @@ local function stopCruiseControl(reason, emitAction)
     cruiseLastBodyHealth = 0.0
     cruiseLimiterApplied = false
     cruiseStartedAt = 0
+    cruiseBoatEngineRpm = 0.0
+    cruiseRuntime.reset()
 
     if emitAction ~= false and vehicle ~= 0 and DoesEntityExist(vehicle) then
         emitVehicleAction('cruise', vehicle, {
@@ -625,11 +1307,18 @@ local function stopCruiseControl(reason, emitAction)
 end
 
 local function startCruiseControl(vehicle, targetSpeed)
+    if autopilotVehicle ~= 0 and stopAutopilot then
+        stopAutopilot('cruise', true)
+    end
+
     if cruiseVehicle ~= 0 then
         stopCruiseControl('replaced', true)
     end
 
     local config = getCruiseConfig()
+    local now = GetGameTimer()
+
+    cruiseRuntime.reset()
 
     cruiseVehicle = vehicle
     cruiseTargetSpeed = targetSpeed
@@ -637,7 +1326,31 @@ local function startCruiseControl(vehicle, targetSpeed)
     cruiseLastEngineHealth = GetVehicleEngineHealth(vehicle)
     cruiseLastBodyHealth = GetVehicleBodyHealth(vehicle)
     cruiseLimiterApplied = config.UseSpeedLimiter ~= false
-    cruiseStartedAt = GetGameTimer()
+    cruiseStartedAt = now
+    cruiseBoatEngineRpm = 0.0
+    cruiseRuntime.lastSpeed = getCruiseSetSpeed(vehicle)
+    cruiseRuntime.adaptiveTargetSpeed = targetSpeed
+    cruiseRuntime.adaptiveProbeNextAt = now
+    cruiseRuntime.adaptiveLastUpdateAt = now
+    cruiseRuntime.collisionSamples = {
+        {
+            at = now,
+            speed = cruiseRuntime.getCollisionSpeed(vehicle),
+            engineHealth = cruiseLastEngineHealth,
+            bodyHealth = cruiseLastBodyHealth,
+            commandedSlowdown = cruiseRuntime.commandedSlowdownTotal
+        }
+    }
+
+    local collisionConfig = type(config.CollisionCancel) == 'table' and config.CollisionCancel or {}
+    cruiseRuntime.collisionGraceUntil = now + math.max(
+        0,
+        math.floor(tonumber(collisionConfig.EngagementGraceMs) or 1000)
+    )
+
+    if isBoatCruiseVehicle(vehicle) then
+        cruiseBoatEngineRpm = getBoatCruiseEngineRpm(config, vehicle) or 0.0
+    end
 
     if cruiseLimiterApplied then
         SetVehicleMaxSpeed(vehicle, getCruiseLimiterSpeed(config, targetSpeed))
@@ -648,6 +1361,809 @@ local function startCruiseControl(vehicle, targetSpeed)
         targetMph = math.floor(targetSpeed * MPH_PER_MPS + 0.5),
         source = 'touchscreen'
     })
+end
+
+local defaultAutopilotCancelControls = {
+    59, 60, 61, 62, 71, 72,
+    87, 88, 89, 90,
+    107, 108, 109, 110, 111, 112,
+    119, 122, 352
+}
+
+local function getAutopilotModeConfig(mode)
+    local config = getAutopilotConfig()
+    local modeConfig = mode == 'plane' and config.Plane or config.Helicopter
+
+    return type(modeConfig) == 'table' and modeConfig or {}
+end
+
+local function getAutopilotCancelControls()
+    local controls = getAutopilotConfig().CancelControls
+    return type(controls) == 'table' and controls or defaultAutopilotCancelControls
+end
+
+local function isAutopilotCancelControl(control)
+    if autopilotVehicle == 0 then
+        return false
+    end
+
+    for _, configuredControl in ipairs(getAutopilotCancelControls()) do
+        if tonumber(configuredControl) == control then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function getAutopilotWaypoint(vehicle)
+    if not IsWaypointActive() then
+        return nil
+    end
+
+    local waypoint = GetFirstBlipInfoId(8)
+
+    if waypoint == 0 or not DoesBlipExist(waypoint) then
+        return nil
+    end
+
+    local waypointCoords = GetBlipInfoIdCoord(waypoint)
+    local vehicleCoords = GetEntityCoords(vehicle)
+
+    return {
+        x = waypointCoords.x,
+        y = waypointCoords.y,
+        z = vehicleCoords.z
+    }
+end
+
+local function getHorizontalDistanceToTarget(vehicle, target)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or type(target) ~= 'table' then
+        return math.huge
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local deltaX = target.x - coords.x
+    local deltaY = target.y - coords.y
+
+    return math.sqrt(deltaX * deltaX + deltaY * deltaY)
+end
+
+local function getAutopilotSurfaceClearance(vehicle)
+    local measuredHeight = GetEntityHeightAboveGround(vehicle)
+    local clearance = type(measuredHeight) == 'number' and measuredHeight > 0.0
+        and measuredHeight
+        or nil
+    local coords = GetEntityCoords(vehicle)
+    local waterFound, waterHeight = GetWaterHeightNoWaves(coords.x, coords.y, coords.z)
+
+    if waterFound and type(waterHeight) == 'number' and waterHeight <= coords.z then
+        local waterClearance = math.max(0.0, coords.z - waterHeight)
+        clearance = clearance and math.min(clearance, waterClearance) or waterClearance
+    end
+
+    return math.max(0.0, clearance or 0.0), clearance ~= nil
+end
+
+local function getAutopilotHeadingToTarget(vehicle, target, fallback)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or type(target) ~= 'table' then
+        return tonumber(fallback) or -1.0
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local deltaX = target.x - coords.x
+    local deltaY = target.y - coords.y
+
+    if deltaX * deltaX + deltaY * deltaY < 0.25 then
+        return tonumber(fallback) or GetEntityHeading(vehicle)
+    end
+
+    return GetHeadingFromVector_2d(deltaX, deltaY)
+end
+
+local function clampValue(value, minimum, maximum)
+    return math.min(maximum, math.max(minimum, value))
+end
+
+local function getSignedHeadingDelta(currentHeading, targetHeading)
+    return (targetHeading - currentHeading + 540.0) % 360.0 - 180.0
+end
+
+local function stepHeadingToward(currentHeading, targetHeading, maximumStep, deadzone)
+    local delta = getSignedHeadingDelta(currentHeading, targetHeading)
+
+    if math.abs(delta) <= math.max(0.0, deadzone or 0.0) then
+        return currentHeading % 360.0
+    end
+
+    return (currentHeading + clampValue(delta, -maximumStep, maximumStep)) % 360.0
+end
+
+local function stepHorizontalVelocity(
+    currentX,
+    currentY,
+    currentZ,
+    targetX,
+    targetY,
+    maximumDelta,
+    deadzone
+)
+    local deltaX = targetX - currentX
+    local deltaY = targetY - currentY
+    local deltaLength = math.sqrt(deltaX * deltaX + deltaY * deltaY)
+
+    if deltaLength <= math.max(0.0, deadzone or 0.0) then
+        return targetX, targetY, currentZ
+    end
+
+    local ratio = math.min(1.0, math.max(0.0, maximumDelta) / deltaLength)
+
+    return currentX + deltaX * ratio, currentY + deltaY * ratio, currentZ
+end
+
+local function getHelicopterRouteSpeed(
+    distance,
+    arrivalRadius,
+    slowDownDistance,
+    targetSpeed,
+    alignment
+)
+    if distance <= arrivalRadius then
+        return 0.0
+    end
+
+    local slowRange = math.max(0.001, slowDownDistance - arrivalRadius)
+    local progress = clampValue((distance - arrivalRadius) / slowRange, 0.0, 1.0)
+
+    return math.max(0.0, targetSpeed)
+        * math.sqrt(progress)
+        * clampValue(alignment, 0.0, 1.0)
+end
+
+local function calculatePlaneOrbitRadius(speedMps, minimumRadius, maximumBankDegrees)
+    local speed = math.max(0.0, speedMps)
+    local minimum = math.max(100.0, minimumRadius)
+    local bankRadians = math.rad(clampValue(maximumBankDegrees, 5.0, 45.0))
+    local denominator = 9.81 * math.tan(bankRadians)
+
+    if denominator <= 0.001 then
+        return minimum
+    end
+
+    return math.max(minimum, speed * speed / denominator)
+end
+
+local function choosePlaneOrbitDirection(center, coords, travelX, travelY)
+    local radialX = coords.x - center.x
+    local radialY = coords.y - center.y
+    local radialLength = math.sqrt(radialX * radialX + radialY * radialY)
+    local travelLength = math.sqrt(travelX * travelX + travelY * travelY)
+
+    if radialLength < 0.001 or travelLength < 0.001 then
+        return 1
+    end
+
+    radialX = radialX / radialLength
+    radialY = radialY / radialLength
+    travelX = travelX / travelLength
+    travelY = travelY / travelLength
+
+    local counterClockwiseDot = -radialY * travelX + radialX * travelY
+    local clockwiseDot = radialY * travelX - radialX * travelY
+
+    return counterClockwiseDot >= clockwiseDot and 1 or -1
+end
+
+local function calculatePlaneOrbitTarget(center, coords, direction, radius, leadDegrees, altitude)
+    local radialAngle = math.atan(coords.y - center.y, coords.x - center.x)
+    local targetAngle = radialAngle + direction * math.rad(leadDegrees)
+
+    return {
+        x = center.x + math.cos(targetAngle) * radius,
+        y = center.y + math.sin(targetAngle) * radius,
+        z = altitude
+    }
+end
+
+local function getPlaneOrbitTerrainSettings(modeConfig)
+    local config = getAutopilotConfig()
+    local terrainClearance = math.max(
+        0.0,
+        tonumber(modeConfig.MinTerrainClearance)
+            or tonumber(config.MinTerrainClearance)
+            or 100.0
+    )
+    local altitudeBuffer = math.max(0.0, tonumber(modeConfig.OrbitAltitudeBuffer) or 100.0)
+
+    return terrainClearance, altitudeBuffer
+end
+
+local function getPlaneRequiredAltitudeAtPoint(x, y, baseAltitude, terrainClearance, altitudeBuffer)
+    local groundFound, groundZ = GetGroundZFor_3dCoord(x, y, baseAltitude + 1000.0, false)
+
+    if groundFound and type(groundZ) == 'number' then
+        return math.max(baseAltitude, groundZ + terrainClearance + altitudeBuffer), true
+    end
+
+    return baseAltitude, false
+end
+
+local function getPlaneOrbitSafeAltitude(center, radius, baseAltitude, modeConfig)
+    local terrainClearance, altitudeBuffer = getPlaneOrbitTerrainSettings(modeConfig)
+    local sampleCount = math.floor(clampValue(
+        tonumber(modeConfig.OrbitTerrainSamples) or 12,
+        4,
+        36
+    ))
+    local highestBaseAltitude = baseAltitude
+    local centerAltitude, centerFound = getPlaneRequiredAltitudeAtPoint(
+        center.x,
+        center.y,
+        baseAltitude,
+        terrainClearance,
+        0.0
+    )
+
+    if centerFound then
+        highestBaseAltitude = math.max(highestBaseAltitude, centerAltitude)
+    end
+
+    for sample = 0, sampleCount - 1 do
+        local angle = sample / sampleCount * math.pi * 2.0
+        local sampleAltitude, sampleFound = getPlaneRequiredAltitudeAtPoint(
+            center.x + math.cos(angle) * radius,
+            center.y + math.sin(angle) * radius,
+            baseAltitude,
+            terrainClearance,
+            0.0
+        )
+
+        if sampleFound then
+            highestBaseAltitude = math.max(highestBaseAltitude, sampleAltitude)
+        end
+    end
+
+    return highestBaseAltitude + altitudeBuffer
+end
+
+local function raisePlaneOrbitAltitudeForTarget(target, modeConfig)
+    local terrainClearance, altitudeBuffer = getPlaneOrbitTerrainSettings(modeConfig)
+    local requiredAltitude, groundFound = getPlaneRequiredAltitudeAtPoint(
+        target.x,
+        target.y,
+        autopilotPlaneHoldAltitude,
+        terrainClearance,
+        altitudeBuffer
+    )
+
+    if groundFound and requiredAltitude > autopilotPlaneHoldAltitude then
+        autopilotPlaneHoldAltitude = requiredAltitude
+    end
+
+    target.z = autopilotPlaneHoldAltitude
+end
+
+local function advancePlaneOrbitTarget(vehicle, modeConfig)
+    if vehicle == 0
+        or not DoesEntityExist(vehicle)
+        or type(autopilotTarget) ~= 'table'
+        or autopilotPlaneOrbitDirection == 0
+        or autopilotPlaneOrbitRadius <= 0.0
+        or autopilotPlaneHoldAltitude <= 0.0
+    then
+        return false
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local leadDegrees = clampValue(tonumber(modeConfig.OrbitLeadDegrees) or 60.0, 15.0, 120.0)
+
+    autopilotPlaneNavTarget = calculatePlaneOrbitTarget(
+        autopilotTarget,
+        coords,
+        autopilotPlaneOrbitDirection,
+        autopilotPlaneOrbitRadius,
+        leadDegrees,
+        autopilotPlaneHoldAltitude
+    )
+    raisePlaneOrbitAltitudeForTarget(autopilotPlaneNavTarget, modeConfig)
+    autopilotPlaneOrbitPointAt = GetGameTimer()
+
+    return true
+end
+
+local function preparePlaneOrbit(vehicle, modeConfig, orbitRadius)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or type(autopilotTarget) ~= 'table' then
+        return false
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local safeBaseAltitude = math.max(coords.z, tonumber(autopilotTarget.z) or coords.z)
+    autopilotPlaneOrbitRadius = math.max(100.0, orbitRadius)
+    autopilotPlaneHoldAltitude = getPlaneOrbitSafeAltitude(
+        autopilotTarget,
+        autopilotPlaneOrbitRadius,
+        safeBaseAltitude,
+        modeConfig
+    )
+
+    local velocity = GetEntityVelocity(vehicle)
+    local travelX = velocity.x
+    local travelY = velocity.y
+
+    if travelX * travelX + travelY * travelY < 1.0 then
+        local forward = GetEntityForwardVector(vehicle)
+        travelX = forward.x
+        travelY = forward.y
+    end
+
+    autopilotPlaneOrbitDirection = choosePlaneOrbitDirection(
+        autopilotTarget,
+        coords,
+        travelX,
+        travelY
+    )
+    autopilotPhase = 'orbit'
+
+    return advancePlaneOrbitTarget(vehicle, modeConfig)
+end
+
+local function applyPlaneOrbitAltitudeSafety(vehicle, modeConfig)
+    if autopilotPlaneHoldAltitude <= 0.0 then
+        return false
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local velocity = GetEntityVelocity(vehicle)
+    local altitudeTolerance = math.max(0.0, tonumber(modeConfig.OrbitAltitudeTolerance) or 10.0)
+    local maximumClimb = math.max(0.0, tonumber(modeConfig.OrbitAltitudeAssistMaxClimbMps) or 8.0)
+    local emergencyClearance = math.max(
+        0.0,
+        tonumber(modeConfig.OrbitEmergencyTerrainClearance) or 75.0
+    )
+    local emergencyClimb = math.max(
+        maximumClimb,
+        tonumber(modeConfig.OrbitEmergencyClimbRateMps) or 12.0
+    )
+    local altitudeError = autopilotPlaneHoldAltitude - coords.z
+    local minimumVerticalSpeed = 0.0
+
+    if altitudeError > altitudeTolerance then
+        minimumVerticalSpeed = math.min(maximumClimb, math.max(1.0, altitudeError * 0.25))
+    end
+
+    if getAutopilotSurfaceClearance(vehicle) < emergencyClearance then
+        minimumVerticalSpeed = math.max(minimumVerticalSpeed, emergencyClimb)
+    end
+
+    if velocity.z < minimumVerticalSpeed then
+        SetEntityVelocity(vehicle, velocity.x, velocity.y, minimumVerticalSpeed)
+        return true
+    end
+
+    return false
+end
+
+local function isHelicopterWaypointControllerEnabled(modeConfig)
+    local horizontalConfig = type(modeConfig.HorizontalControl) == 'table'
+        and modeConfig.HorizontalControl
+        or {}
+    local verticalConfig = type(modeConfig.VerticalControl) == 'table'
+        and modeConfig.VerticalControl
+        or {}
+
+    return horizontalConfig.Enabled ~= false and verticalConfig.Enabled ~= false
+end
+
+local function applyHelicopterWaypointControl(vehicle, modeConfig, distance)
+    if autopilotMode ~= 'helicopter'
+        or autopilotBehavior ~= 'waypoint'
+        or vehicle == 0
+        or not DoesEntityExist(vehicle)
+        or type(autopilotTarget) ~= 'table'
+    then
+        return false
+    end
+
+    local horizontalConfig = type(modeConfig.HorizontalControl) == 'table'
+        and modeConfig.HorizontalControl
+        or {}
+    local verticalConfig = type(modeConfig.VerticalControl) == 'table'
+        and modeConfig.VerticalControl
+        or {}
+
+    if not isHelicopterWaypointControllerEnabled(modeConfig) then
+        return false
+    end
+
+    local coords = GetEntityCoords(vehicle)
+    local velocity = GetEntityVelocity(vehicle)
+    local deltaX = autopilotTarget.x - coords.x
+    local deltaY = autopilotTarget.y - coords.y
+    local horizontalDistance = math.sqrt(deltaX * deltaX + deltaY * deltaY)
+    local directionX = horizontalDistance > 0.001 and deltaX / horizontalDistance or 0.0
+    local directionY = horizontalDistance > 0.001 and deltaY / horizontalDistance or 0.0
+    local maximumDeltaTime = math.max(
+        0.001,
+        tonumber(horizontalConfig.MaxDeltaTimeSeconds) or 0.05
+    )
+    local deltaTime = clampValue(GetFrameTime(), 0.001, maximumDeltaTime)
+    local targetVelocityX = 0.0
+    local targetVelocityY = 0.0
+    local targetHeading = horizontalDistance > 0.001
+        and GetHeadingFromVector_2d(deltaX, deltaY)
+        or GetEntityHeading(vehicle)
+    local currentHeading = GetEntityHeading(vehicle)
+    local headingDelta = getSignedHeadingDelta(currentHeading, targetHeading)
+    local minimumAlignment = clampValue(
+        tonumber(horizontalConfig.MinimumAlignment) or 0.15,
+        0.0,
+        1.0
+    )
+    local alignment = minimumAlignment
+        + (1.0 - minimumAlignment) * math.max(0.0, math.cos(math.rad(headingDelta)))
+
+    if horizontalConfig.Enabled ~= false then
+        if autopilotPhase == 'holding' then
+            local holdRadius = math.max(0.5, tonumber(modeConfig.HoldRadius) or 3.0)
+
+            if distance > holdRadius then
+                local holdSpeed = math.max(0.1, tonumber(modeConfig.HoldSpeedMph) or 5.0) / MPH_PER_MPS
+                local correctionSpeed = math.min(holdSpeed, math.max(0.5, (distance - holdRadius) * 0.35))
+                targetVelocityX = directionX * correctionSpeed
+                targetVelocityY = directionY * correctionSpeed
+            end
+        else
+            local arrivalRadius = math.max(0.5, tonumber(modeConfig.ArrivalRadius) or 25.0)
+            local slowDownDistance = math.max(
+                arrivalRadius + 0.001,
+                tonumber(modeConfig.SlowDownDistance) or 100.0
+            )
+            local routeSpeed = getHelicopterRouteSpeed(
+                distance,
+                arrivalRadius,
+                slowDownDistance,
+                autopilotTargetSpeed,
+                alignment
+            )
+
+            targetVelocityX = directionX * routeSpeed
+            targetVelocityY = directionY * routeSpeed
+        end
+    else
+        targetVelocityX = velocity.x
+        targetVelocityY = velocity.y
+    end
+
+    local currentHorizontalSpeed = math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y)
+    local targetHorizontalSpeed = math.sqrt(
+        targetVelocityX * targetVelocityX + targetVelocityY * targetVelocityY
+    )
+    local accelerating = targetHorizontalSpeed >= currentHorizontalSpeed
+        and velocity.x * targetVelocityX + velocity.y * targetVelocityY >= 0.0
+    local response = accelerating
+        and math.max(0.0, tonumber(horizontalConfig.AccelerationMps2) or 3.0)
+        or math.max(0.0, tonumber(horizontalConfig.DecelerationMps2) or 5.0)
+    local nextVelocityX, nextVelocityY, nextVelocityZ = stepHorizontalVelocity(
+        velocity.x,
+        velocity.y,
+        velocity.z,
+        targetVelocityX,
+        targetVelocityY,
+        response * deltaTime,
+        math.max(0.0, tonumber(horizontalConfig.VelocityDeadzoneMps) or 0.05)
+    )
+
+    if verticalConfig.Enabled ~= false then
+        local surfaceClearance, clearanceValid = getAutopilotSurfaceClearance(vehicle)
+
+        if clearanceValid and surfaceClearance > 0.1 then
+            autopilotLastSurfaceClearance = surfaceClearance
+        else
+            surfaceClearance = autopilotLastSurfaceClearance > 0.0
+                and autopilotLastSurfaceClearance
+                or autopilotFlightHeight
+        end
+
+        local clearanceError = autopilotFlightHeight - surfaceClearance
+        local verticalDeadzone = math.max(0.0, tonumber(verticalConfig.DeadzoneMeters) or 1.0)
+
+        if math.abs(clearanceError) <= verticalDeadzone then
+            nextVelocityZ = 0.0
+        else
+            local gain = math.max(0.0, tonumber(verticalConfig.Gain) or 0.35)
+            local maximumClimb = math.max(0.0, tonumber(verticalConfig.MaxClimbMps) or 5.0)
+            local maximumDescent = math.max(0.0, tonumber(verticalConfig.MaxDescentMps) or 3.0)
+
+            nextVelocityZ = clampValue(
+                clearanceError * gain,
+                -maximumDescent,
+                maximumClimb
+            )
+        end
+    end
+
+    SetEntityVelocity(vehicle, nextVelocityX, nextVelocityY, nextVelocityZ)
+
+    if horizontalConfig.Enabled ~= false and horizontalDistance > 1.0 then
+        local yawRate = math.max(0.0, tonumber(horizontalConfig.YawRateDegPerSecond) or 45.0)
+        local yawDeadzone = math.max(0.0, tonumber(horizontalConfig.YawDeadzoneDegrees) or 1.0)
+        local nextHeading = stepHeadingToward(
+            currentHeading,
+            targetHeading,
+            yawRate * deltaTime,
+            yawDeadzone
+        )
+
+        SetEntityHeading(vehicle, nextHeading)
+        autopilotTargetHeading = targetHeading
+    end
+
+    return true
+end
+
+local function getAutopilotTargetSpeed(mode, currentSpeed)
+    local modeConfig = getAutopilotModeConfig(mode)
+    local defaultMinimum = mode == 'plane' and 60.0 or 10.0
+    local defaultMaximum = mode == 'plane' and 250.0 or 120.0
+    local minimumMph = math.max(0.0, tonumber(modeConfig.MinSpeedMph) or defaultMinimum)
+    local maximumMph = math.max(minimumMph, tonumber(modeConfig.MaxSpeedMph) or defaultMaximum)
+    local currentMph = math.max(0.0, currentSpeed * MPH_PER_MPS)
+
+    if mode == 'plane' and currentMph < minimumMph then
+        return nil, minimumMph
+    end
+
+    if mode == 'helicopter' then
+        local waypointMph = math.max(minimumMph, tonumber(modeConfig.WaypointSpeedMph) or 35.0)
+        currentMph = math.max(currentMph, waypointMph)
+    end
+
+    return math.min(maximumMph, math.max(minimumMph, currentMph)) / MPH_PER_MPS, minimumMph
+end
+
+local function issueAutopilotTask()
+    if autopilotVehicle == 0
+        or autopilotPed == 0
+        or not DoesEntityExist(autopilotVehicle)
+        or not DoesEntityExist(autopilotPed)
+        or type(autopilotTarget) ~= 'table'
+    then
+        return false
+    end
+
+    local config = getAutopilotConfig()
+    local modeConfig = getAutopilotModeConfig(autopilotMode)
+    local terrainClearance = math.floor(math.max(
+        0.0,
+        tonumber(modeConfig.MinTerrainClearance)
+            or tonumber(config.MinTerrainClearance)
+            or 30.0
+    ) + 0.5)
+
+    if autopilotMode == 'plane' then
+        local orbiting = autopilotPhase == 'orbit'
+        local navigationTarget = orbiting and autopilotPlaneNavTarget or autopilotTarget
+
+        if type(navigationTarget) ~= 'table' then
+            return false
+        end
+
+        local targetAltitude = orbiting and autopilotPlaneHoldAltitude > 0.0
+            and autopilotPlaneHoldAltitude
+            or navigationTarget.z
+        local flightHeight = math.floor(targetAltitude + 0.5)
+        local arrivalRadius = math.max(25.0, tonumber(modeConfig.ArrivalRadius) or 300.0)
+        local radius = orbiting
+            and math.max(25.0, tonumber(modeConfig.OrbitTaskReachedDistance) or 75.0)
+            or arrivalRadius
+
+        TaskPlaneMission(
+            autopilotPed,
+            autopilotVehicle,
+            0,
+            0,
+            navigationTarget.x,
+            navigationTarget.y,
+            targetAltitude,
+            4,
+            autopilotTargetSpeed,
+            radius,
+            -1.0,
+            flightHeight,
+            terrainClearance,
+            true
+        )
+        SetPedKeepTask(autopilotPed, true)
+
+        autopilotLastTaskAt = GetGameTimer()
+
+        return true
+    end
+
+    local hovering = autopilotBehavior == 'hover'
+
+    if not hovering then
+        autopilotLastTaskAt = GetGameTimer()
+        return true
+    end
+
+    local arrivalRadius = math.max(0.5, tonumber(modeConfig.HoverRadius) or 3.0)
+    local targetRadius = arrivalRadius
+    local slowDownDistance = math.max(
+        arrivalRadius,
+        tonumber(modeConfig.HoverSlowDownDistance) or 15.0
+    )
+    local missionMinHeight = math.min(terrainClearance, autopilotFlightHeight) + 0.0
+    local missionSpeed = math.max(0.1, autopilotTargetSpeed)
+
+    TaskHeliMission(
+        autopilotPed,
+        autopilotVehicle,
+        0,
+        0,
+        autopilotTarget.x,
+        autopilotTarget.y,
+        autopilotTarget.z,
+        4,
+        missionSpeed,
+        targetRadius,
+        autopilotTargetHeading,
+        autopilotFlightHeight,
+        missionMinHeight,
+        slowDownDistance,
+        4481 -- start engine, terrain avoidance/height hold, and attain the requested heading
+    )
+    SetPedKeepTask(autopilotPed, true)
+
+    autopilotLastTaskAt = GetGameTimer()
+
+    return true
+end
+
+stopAutopilot = function(reason, emitAction)
+    local vehicle = autopilotVehicle
+    local ped = autopilotPed
+    local mode = autopilotMode
+    local behavior = autopilotBehavior
+    local phase = autopilotPhase
+
+    if vehicle ~= 0
+        and ped ~= 0
+        and DoesEntityExist(vehicle)
+        and DoesEntityExist(ped)
+        and GetPedInVehicleSeat(vehicle, -1) == ped
+    then
+        ClearPedTasks(ped)
+    end
+
+    autopilotVehicle = 0
+    autopilotPed = 0
+    autopilotMode = nil
+    autopilotBehavior = nil
+    autopilotTarget = nil
+    autopilotTargetSpeed = 0.0
+    autopilotFlightHeight = 0
+    autopilotLastSurfaceClearance = 0.0
+    autopilotPlaneHoldAltitude = 0.0
+    autopilotPlaneNavTarget = nil
+    autopilotPlaneOrbitDirection = 0
+    autopilotPlaneOrbitRadius = 0.0
+    autopilotPlaneOrbitPointAt = 0
+    autopilotTargetHeading = -1.0
+    autopilotPhase = nil
+    autopilotStartedAt = 0
+    autopilotInputGraceUntil = 0
+    autopilotLastTaskAt = 0
+    autopilotStartEngineHealth = 0.0
+    autopilotStartBodyHealth = 0.0
+
+    if emitAction ~= false and vehicle ~= 0 and DoesEntityExist(vehicle) then
+        emitVehicleAction('autopilot', vehicle, {
+            active = false,
+            aircraftType = mode,
+            mode = behavior,
+            phase = phase,
+            reason = reason,
+            source = 'touchscreen'
+        })
+    end
+end
+
+local function startAutopilot(vehicle, mode, behavior, target, targetSpeed, initialPhase)
+    if cruiseVehicle ~= 0 then
+        stopCruiseControl('autopilot', true)
+    end
+
+    if autopilotVehicle ~= 0 then
+        stopAutopilot('replaced', true)
+    end
+
+    autopilotVehicle = vehicle
+    autopilotPed = getPed()
+    autopilotMode = mode
+    autopilotBehavior = behavior or 'waypoint'
+    autopilotTarget = target
+    autopilotTargetSpeed = targetSpeed
+    local capturedClearance, clearanceValid = getAutopilotSurfaceClearance(vehicle)
+    autopilotFlightHeight = mode == 'helicopter'
+        and math.floor(math.max(0.1, capturedClearance) + 0.5)
+        or 0
+    autopilotLastSurfaceClearance = mode == 'helicopter' and clearanceValid
+        and capturedClearance
+        or 0.0
+    autopilotPlaneHoldAltitude = 0.0
+    autopilotPlaneNavTarget = nil
+    autopilotPlaneOrbitDirection = 0
+    autopilotPlaneOrbitRadius = 0.0
+    autopilotPlaneOrbitPointAt = 0
+
+    if mode == 'helicopter' then
+        autopilotTargetHeading = autopilotBehavior == 'hover'
+            and (tonumber(target.heading) or GetEntityHeading(vehicle))
+            or getAutopilotHeadingToTarget(vehicle, target, GetEntityHeading(vehicle))
+    else
+        autopilotTargetHeading = -1.0
+    end
+    autopilotPhase = initialPhase or 'enroute'
+    autopilotStartedAt = GetGameTimer()
+    autopilotInputGraceUntil = autopilotStartedAt + math.max(
+        0,
+        math.floor(tonumber(getAutopilotConfig().ManualInputGraceMs) or 500)
+    )
+    autopilotLastTaskAt = 0
+    autopilotStartEngineHealth = GetVehicleEngineHealth(vehicle)
+    autopilotStartBodyHealth = GetVehicleBodyHealth(vehicle)
+
+    issueAutopilotTask()
+
+    emitVehicleAction('autopilot', vehicle, {
+        active = true,
+        aircraftType = mode,
+        mode = autopilotBehavior,
+        phase = autopilotPhase,
+        targetAltitude = mode == 'plane' and autopilotPlaneHoldAltitude > 0.0
+            and autopilotPlaneHoldAltitude
+            or target.z,
+        targetClearance = mode == 'helicopter' and autopilotFlightHeight or nil,
+        targetMph = math.floor(targetSpeed * MPH_PER_MPS + 0.5),
+        source = 'touchscreen'
+    })
+end
+
+local function disableAutopilotControls()
+    for _, configuredControl in ipairs(getAutopilotCancelControls()) do
+        local control = tonumber(configuredControl)
+
+        if control then
+            DisableControlAction(0, control, true)
+        end
+    end
+end
+
+local function hasAutopilotManualInput()
+    if uiOpen or GetGameTimer() < autopilotInputGraceUntil then
+        return false
+    end
+
+    local config = getAutopilotConfig()
+    local threshold = math.min(1.0, math.max(0.0, tonumber(config.ManualInputThreshold) or 0.20))
+
+    for _, configuredControl in ipairs(getAutopilotCancelControls()) do
+        local control = tonumber(configuredControl)
+
+        if control then
+            local input = math.max(
+                math.abs(GetControlNormal(0, control)),
+                math.abs(GetDisabledControlNormal(0, control))
+            )
+
+            if input > 0.0 and input >= threshold then
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
 local function getKeyFobConfig()
@@ -1104,7 +2620,16 @@ local function leaveVehicle(vehicle, ped, keepRunning)
 end
 
 local function setUiVisible(visible)
+    local wasOpen = uiOpen
     uiOpen = visible
+
+    if wasOpen and not visible and autopilotVehicle ~= 0 then
+        local closeGraceMs = math.max(
+            0,
+            math.floor(tonumber(getAutopilotConfig().UiCloseInputGraceMs) or 250)
+        )
+        autopilotInputGraceUntil = GetGameTimer() + closeGraceMs
+    end
 
     if not visible then
         suppressPauseUntil = GetGameTimer() + 650
@@ -1354,6 +2879,23 @@ local function getCruiseControlState(vehicle)
         active = active,
         targetMph = active and math.floor(cruiseTargetSpeed * MPH_PER_MPS + 0.5) or 0,
         externalOwner = externalOwner
+    }
+end
+
+local function getAutopilotState(vehicle)
+    local aircraftType = getAutopilotAircraftType(vehicle)
+    local supported = isAutopilotSupported(vehicle)
+    local active = supported
+        and autopilotVehicle == vehicle
+        and type(autopilotTarget) == 'table'
+
+    return {
+        supported = supported,
+        aircraftType = aircraftType,
+        active = active,
+        mode = active and autopilotBehavior or nil,
+        phase = active and autopilotPhase or nil,
+        targetClearance = active and aircraftType == 'helicopter' and autopilotFlightHeight or nil
     }
 end
 
@@ -1660,6 +3202,7 @@ local function getVehicleState()
         hazards = stored.hazards,
         interiorLight = stored.interiorLight,
         cruise = getCruiseControlState(vehicle),
+        autopilot = getAutopilotState(vehicle),
         anchor = getBoatAnchorState(vehicle),
         landingGear = getLandingGearState(vehicle),
         trailer = hasTrailer(vehicle),
@@ -1809,6 +3352,7 @@ local function getVehicleDiagnostics(vehicle)
         hasKey = hasKeyFobKey(vehicle),
         controls = getEnabledControls(vehicle),
         cruise = getCruiseControlState(vehicle),
+        autopilot = getAutopilotState(vehicle),
         anchor = getBoatAnchorState(vehicle),
         landingGear = getLandingGearState(vehicle),
         doors = getAvailableDoors(vehicle),
@@ -2176,7 +3720,8 @@ RegisterNUICallback('toggleCruise', function(_, cb)
             local config = getCruiseConfig()
             local minSpeedMph = math.max(0.0, tonumber(config.MinSpeedMph) or 20.0)
             local maxSpeedMph = math.max(minSpeedMph, tonumber(config.MaxSpeedMph) or 120.0)
-            local speedMph = GetEntitySpeed(vehicle) * MPH_PER_MPS
+            local cruiseSpeed = getCruiseSetSpeed(vehicle)
+            local speedMph = cruiseSpeed * MPH_PER_MPS
             local forwardSpeed = GetEntitySpeedVector(vehicle, true).y
 
             if not GetIsVehicleEngineRunning(vehicle) or forwardSpeed <= 0.0 then
@@ -2189,7 +3734,158 @@ RegisterNUICallback('toggleCruise', function(_, cb)
                     max = ('%.0f'):format(maxSpeedMph)
                 }, ('Cruise control is available between %.0f and %.0f MPH.'):format(minSpeedMph, maxSpeedMph)), 'error')
             else
-                startCruiseControl(vehicle, GetEntitySpeed(vehicle))
+                startCruiseControl(vehicle, cruiseSpeed)
+            end
+        end
+    end
+
+    sendVehicleStateAfterAction()
+    cb({ ok = ok, reason = reason })
+end)
+
+local function validateAutopilotFlightState(action, vehicle, minimumHeight)
+    local surfaceClearance = getAutopilotSurfaceClearance(vehicle)
+
+    if not GetIsVehicleEngineRunning(vehicle)
+        or not IsVehicleDriveable(vehicle, false)
+        or not IsEntityInAir(vehicle)
+        or surfaceClearance < minimumHeight
+    then
+        notify(L(
+            'notifications.autopilotUnavailable',
+            nil,
+            'Autopilot requires you to be airborne in the pilot seat with the engine running.'
+        ), 'error')
+        return denyAction(action, 'autopilot_unavailable')
+    end
+
+    return true
+end
+
+RegisterNUICallback('toggleAutopilot', function(_, cb)
+    local vehicle = getVehicle()
+    local supported = isAutopilotSupported(vehicle)
+    local ok, reason
+
+    if not supported then
+        ok, reason = denyAction('autopilot', 'unsupported_autopilot')
+    else
+        ok, reason = validateVehicleAction('autopilot', vehicle, 'autopilot')
+    end
+
+    if ok then
+        local waypointActive = autopilotVehicle == vehicle
+            and autopilotBehavior == 'waypoint'
+            and type(autopilotTarget) == 'table'
+
+        if waypointActive then
+            stopAutopilot('manual', true)
+        else
+            local config = getAutopilotConfig()
+            local mode = getAutopilotAircraftType(vehicle)
+            local modeConfig = getAutopilotModeConfig(mode)
+            local minHeight = math.max(0.0, tonumber(config.MinActivationHeight) or 10.0)
+            if mode == 'helicopter' and not isHelicopterWaypointControllerEnabled(modeConfig) then
+                notify(L(
+                    'notifications.autopilotUnavailable',
+                    nil,
+                    'Autopilot requires both helicopter flight controllers to be enabled.'
+                ), 'error')
+                ok, reason = denyAction('autopilot', 'autopilot_controller_disabled')
+            else
+                ok, reason = validateAutopilotFlightState('autopilot', vehicle, minHeight)
+            end
+
+            if ok then
+                local target = getAutopilotWaypoint(vehicle)
+
+                if not target then
+                    ok, reason = denyAction('autopilot', 'autopilot_no_waypoint')
+                    notify(L(
+                        'notifications.autopilotNoWaypoint',
+                        nil,
+                        'Set a map waypoint before starting autopilot.'
+                    ), 'error')
+                else
+                    local minDistanceDefault = mode == 'plane' and 500.0 or 50.0
+                    local minDistance = math.max(0.0, tonumber(modeConfig.MinWaypointDistance) or minDistanceDefault)
+                    local distance = getHorizontalDistanceToTarget(vehicle, target)
+
+                    if distance < minDistance then
+                        ok, reason = denyAction('autopilot', 'autopilot_waypoint_too_close')
+                        notify(L(
+                            'notifications.autopilotWaypointTooClose',
+                            { distance = ('%.0f'):format(minDistance) },
+                            ('Choose a waypoint at least %.0f meters away.'):format(minDistance)
+                        ), 'error')
+                    else
+                        local currentSpeed = mode == 'plane'
+                            and math.max(0.0, GetEntitySpeedVector(vehicle, true).y)
+                            or GetEntitySpeed(vehicle)
+                        local targetSpeed, minimumSpeed = getAutopilotTargetSpeed(mode, currentSpeed)
+
+                        if not targetSpeed then
+                            ok, reason = denyAction('autopilot', 'autopilot_plane_too_slow')
+                            notify(L(
+                                'notifications.autopilotPlaneTooSlow',
+                                { speed = ('%.0f'):format(minimumSpeed) },
+                                ('Reach at least %.0f MPH before starting plane autopilot.'):format(minimumSpeed)
+                            ), 'error')
+                        else
+                            startAutopilot(vehicle, mode, 'waypoint', target, targetSpeed, 'enroute')
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    sendVehicleStateAfterAction()
+    cb({ ok = ok, reason = reason })
+end)
+
+RegisterNUICallback('toggleHover', function(_, cb)
+    local vehicle = getVehicle()
+    local aircraftType = getAutopilotAircraftType(vehicle)
+    local supported = aircraftType == 'helicopter' and isAutopilotSupported(vehicle)
+    local ok, reason
+
+    if not supported then
+        ok, reason = denyAction('hover', 'unsupported_hover')
+    else
+        ok, reason = validateVehicleAction('hover', vehicle, 'autopilot')
+    end
+
+    if ok then
+        local hoverActive = autopilotVehicle == vehicle
+            and autopilotBehavior == 'hover'
+            and type(autopilotTarget) == 'table'
+
+        if hoverActive then
+            stopAutopilot('manual', true)
+        else
+            local modeConfig = getAutopilotModeConfig('helicopter')
+            local minHeight = math.max(0.0, tonumber(modeConfig.HoverMinActivationHeight) or 2.0)
+            ok, reason = validateAutopilotFlightState('hover', vehicle, minHeight)
+
+            if ok then
+                local coords = GetEntityCoords(vehicle)
+                local hoverSpeedMph = math.max(0.1, tonumber(modeConfig.HoverSpeedMph) or 2.0)
+                local target = {
+                    x = coords.x,
+                    y = coords.y,
+                    z = coords.z,
+                    heading = GetEntityHeading(vehicle)
+                }
+
+                startAutopilot(
+                    vehicle,
+                    'helicopter',
+                    'hover',
+                    target,
+                    hoverSpeedMph / MPH_PER_MPS,
+                    'hovering'
+                )
             end
         end
     end
@@ -2510,8 +4206,10 @@ CreateThread(function()
                 disableUiCloseControls()
 
                 for _, control in ipairs(Config.AllowedControlsWhileOpen) do
-                    EnableControlAction(0, control, true)
-                    EnableControlAction(2, control, true)
+                    if not isAutopilotCancelControl(control) then
+                        EnableControlAction(0, control, true)
+                        EnableControlAction(2, control, true)
+                    end
                 end
             else
                 DisableControlAction(0, 24, true) -- attack
@@ -2567,6 +4265,78 @@ CreateThread(function()
 end)
 
 CreateThread(function()
+    local monitoredVehicle = 0
+    local movementHeld = false
+    local nextNotificationAt = 0
+
+    while true do
+        local vehicle = getVehicle()
+        local anchored = vehicle ~= 0
+            and DoesEntityExist(vehicle)
+            and isDriver(vehicle)
+            and isBoatAnchorSupported(vehicle)
+            and getStoredVehicleState(vehicle).anchor == true
+
+        if anchored then
+            if monitoredVehicle ~= vehicle then
+                monitoredVehicle = vehicle
+                movementHeld = false
+                nextNotificationAt = 0
+            end
+
+            local movementPressed = isBoatAnchorMovementInputPressed()
+            local now = GetGameTimer()
+
+            if movementPressed and not movementHeld and now >= nextNotificationAt then
+                notify(L(
+                    'notifications.anchorMoveBlocked',
+                    nil,
+                    'Raise the anchor before trying to move the boat.'
+                ), 'warning')
+
+                local anchorConfig = Config.BoatAnchor or {}
+                local cooldownMs = math.max(
+                    0,
+                    math.floor(tonumber(anchorConfig.MoveAttemptNotifyCooldownMs) or 1500)
+                )
+
+                nextNotificationAt = now + cooldownMs
+            end
+
+            movementHeld = movementPressed
+            Wait(0)
+        else
+            monitoredVehicle = 0
+            movementHeld = false
+            nextNotificationAt = 0
+            Wait(200)
+        end
+    end
+end)
+
+CreateThread(function()
+    while true do
+        if cruiseRuntime.adaptiveProbeDrainCount == 0 then
+            Wait(200)
+        else
+            for handle in pairs(cruiseRuntime.adaptiveProbeDrains) do
+                local status = GetShapeTestResult(handle)
+
+                if status == 0 or status == 2 then
+                    cruiseRuntime.adaptiveProbeDrains[handle] = nil
+                    cruiseRuntime.adaptiveProbeDrainCount = math.max(
+                        0,
+                        cruiseRuntime.adaptiveProbeDrainCount - 1
+                    )
+                end
+            end
+
+            Wait(0)
+        end
+    end
+end)
+
+CreateThread(function()
     while true do
         if cruiseVehicle == 0 then
             Wait(250)
@@ -2582,6 +4352,8 @@ CreateThread(function()
                 cancelReason = 'driver_changed'
             elseif not GetIsVehicleEngineRunning(vehicle) or not IsVehicleDriveable(vehicle, false) then
                 cancelReason = 'engine_off'
+            elseif NetworkGetEntityIsNetworked(vehicle) and not NetworkHasControlOfEntity(vehicle) then
+                cancelReason = 'network_control'
             elseif getExternalCruiseOwner() then
                 cancelReason = 'external_resource'
             elseif not isCruiseControlSupported(vehicle) or not canUseVehicleControl(vehicle, 'cruise') then
@@ -2594,10 +4366,22 @@ CreateThread(function()
                 local forwardSpeed = GetEntitySpeedVector(vehicle, true).y
                 local engineHealth = GetVehicleEngineHealth(vehicle)
                 local bodyHealth = GetVehicleBodyHealth(vehicle)
+                local currentSpeed = GetEntitySpeed(vehicle)
+                local collisionSpeed = cruiseRuntime.getCollisionSpeed(vehicle)
+                local now = GetGameTimer()
                 local damageThreshold = math.max(0.0, tonumber(config.DamageCancelThreshold) or 75.0)
 
                 if forwardSpeed < -0.1 then
                     cancelReason = 'reverse'
+                elseif cruiseRuntime.shouldCancelForCollision(
+                    config,
+                    vehicle,
+                    now,
+                    collisionSpeed,
+                    engineHealth,
+                    bodyHealth
+                ) then
+                    cancelReason = 'collision'
                 elseif damageThreshold > 0.0 and (
                     cruiseLastEngineHealth - engineHealth >= damageThreshold
                     or cruiseLastBodyHealth - bodyHealth >= damageThreshold
@@ -2606,28 +4390,238 @@ CreateThread(function()
                 else
                     local acceleratorPressed = isGameplayControlPressed(71) or isGameplayControlPressed(61)
                     local steering = isGameplayControlPressed(63) or isGameplayControlPressed(64)
-                    local currentSpeed = GetEntitySpeed(vehicle)
+                    local effectiveTargetSpeed = cruiseRuntime.updateAdaptiveFollowing(
+                        config,
+                        vehicle,
+                        currentSpeed,
+                        now
+                    )
 
                     if cruiseLimiterApplied then
                         SetVehicleMaxSpeed(
                             vehicle,
-                            acceleratorPressed and cruiseOriginalMaxSpeed or getCruiseLimiterSpeed(config, cruiseTargetSpeed)
+                            acceleratorPressed
+                                and cruiseOriginalMaxSpeed
+                                or getCruiseLimiterSpeed(config, effectiveTargetSpeed)
                         )
                     end
 
                     if acceleratorPressed then
-                        cruiseStartedAt = GetGameTimer()
+                        cruiseStartedAt = now
                     else
-                        applyCruiseCorrection(config, vehicle, currentSpeed, cruiseTargetSpeed, steering)
+                        applyCruiseCorrection(config, vehicle, currentSpeed, effectiveTargetSpeed, steering)
+                        applyBoatCruiseEngineRpm(config, vehicle)
                     end
 
                     cruiseLastEngineHealth = engineHealth
                     cruiseLastBodyHealth = bodyHealth
+                    cruiseRuntime.lastSpeed = collisionSpeed
                 end
             end
 
             if cancelReason then
                 stopCruiseControl(cancelReason, true)
+
+                if uiOpen then
+                    sendVehicleState()
+                end
+            end
+
+            Wait(0)
+        end
+    end
+end)
+
+CreateThread(function()
+    while true do
+        if autopilotVehicle == 0 then
+            Wait(50)
+        else
+            local vehicle = autopilotVehicle
+            local ped = getPed()
+            local config = getAutopilotConfig()
+            local cancelReason
+
+            if not DoesEntityExist(vehicle) then
+                cancelReason = 'vehicle_missing'
+            elseif autopilotPed == 0 or not DoesEntityExist(autopilotPed) or autopilotPed ~= ped then
+                cancelReason = 'pilot_changed'
+            elseif IsEntityDead(ped) then
+                cancelReason = 'pilot_dead'
+            elseif GetVehiclePedIsIn(ped, false) ~= vehicle or GetPedInVehicleSeat(vehicle, -1) ~= ped then
+                cancelReason = 'driver_changed'
+            elseif not IsEntityInAir(vehicle) then
+                cancelReason = 'landed'
+            elseif not GetIsVehicleEngineRunning(vehicle) or not IsVehicleDriveable(vehicle, false) then
+                cancelReason = 'engine_off'
+            elseif NetworkGetEntityIsNetworked(vehicle) and not NetworkHasControlOfEntity(vehicle) then
+                cancelReason = 'network_control'
+            elseif not isAutopilotSupported(vehicle) or not canUseVehicleControl(vehicle, 'autopilot') then
+                cancelReason = 'control_unavailable'
+            else
+                local engineHealth = GetVehicleEngineHealth(vehicle)
+                local bodyHealth = GetVehicleBodyHealth(vehicle)
+                local damageThreshold = math.max(0.0, tonumber(config.DamageCancelThreshold) or 75.0)
+
+                if damageThreshold > 0.0 and (
+                    autopilotStartEngineHealth - engineHealth >= damageThreshold
+                    or autopilotStartBodyHealth - bodyHealth >= damageThreshold
+                ) then
+                    cancelReason = 'damage'
+                end
+            end
+
+            if not cancelReason then
+                disableAutopilotControls()
+
+                if hasAutopilotManualInput() then
+                    cancelReason = 'manual_input'
+                else
+                    local modeConfig = getAutopilotModeConfig(autopilotMode)
+                    local defaultArrivalRadius = autopilotMode == 'plane' and 300.0 or 25.0
+                    local arrivalRadius = math.max(5.0, tonumber(modeConfig.ArrivalRadius) or defaultArrivalRadius)
+                    local distance = getHorizontalDistanceToTarget(vehicle, autopilotTarget)
+                    local phaseChanged = false
+
+                    if autopilotBehavior == 'hover' then
+                        local refreshMs = math.max(
+                            250,
+                            math.floor(tonumber(modeConfig.HoverRefreshMs) or 1000)
+                        )
+
+                        if GetGameTimer() - autopilotLastTaskAt >= refreshMs then
+                            issueAutopilotTask()
+                        end
+                    elseif autopilotMode == 'plane' and autopilotPhase == 'enroute' then
+                        local speed = GetEntitySpeed(vehicle)
+                        local orbitRadius = calculatePlaneOrbitRadius(
+                            speed,
+                            tonumber(modeConfig.OrbitMinRadius) or 700.0,
+                            tonumber(modeConfig.OrbitMaxBankDegrees) or 25.0
+                        )
+                        local entryRadius = math.max(
+                            arrivalRadius,
+                            tonumber(modeConfig.OrbitEntryRadius) or 1200.0,
+                            orbitRadius + math.max(0.0, tonumber(modeConfig.OrbitEntryMargin) or 400.0),
+                            speed * math.max(0.0, tonumber(modeConfig.OrbitEntryLeadSeconds) or 10.0)
+                        )
+
+                        if distance <= entryRadius then
+                            if preparePlaneOrbit(vehicle, modeConfig, orbitRadius)
+                                and issueAutopilotTask()
+                            then
+                                phaseChanged = true
+                            else
+                                cancelReason = 'navigation_failed'
+                            end
+                        end
+                    elseif autopilotMode == 'plane' and autopilotPhase == 'orbit' then
+                        applyPlaneOrbitAltitudeSafety(vehicle, modeConfig)
+
+                        if type(autopilotPlaneNavTarget) ~= 'table' then
+                            cancelReason = 'navigation_failed'
+                        else
+                            local now = GetGameTimer()
+                            local refreshMs = math.max(
+                                250,
+                                math.floor(tonumber(modeConfig.OrbitTaskRefreshMs) or 3000)
+                            )
+                            local taskReachedDistance = math.max(
+                                25.0,
+                                tonumber(modeConfig.OrbitTaskReachedDistance) or 75.0
+                            )
+                            local advanceDistance = math.max(
+                                tonumber(modeConfig.OrbitAdvanceDistance) or 300.0,
+                                taskReachedDistance + GetEntitySpeed(vehicle) * (refreshMs / 1000.0 + 1.0)
+                            )
+                            local pointTimeoutMs = math.max(
+                                refreshMs,
+                                math.floor(tonumber(modeConfig.OrbitPointTimeoutMs) or 15000)
+                            )
+                            local navigationDistance = getHorizontalDistanceToTarget(
+                                vehicle,
+                                autopilotPlaneNavTarget
+                            )
+
+                            if navigationDistance <= advanceDistance
+                                or now - autopilotPlaneOrbitPointAt >= pointTimeoutMs
+                            then
+                                if not advancePlaneOrbitTarget(vehicle, modeConfig)
+                                    or not issueAutopilotTask()
+                                then
+                                    cancelReason = 'navigation_failed'
+                                end
+                            elseif now - autopilotLastTaskAt >= refreshMs
+                                and not issueAutopilotTask()
+                            then
+                                cancelReason = 'navigation_failed'
+                            end
+                        end
+                    elseif autopilotMode == 'helicopter'
+                        and autopilotPhase == 'enroute'
+                        and distance <= arrivalRadius
+                    then
+                        autopilotPhase = 'holding'
+                        phaseChanged = true
+                        issueAutopilotTask()
+                    elseif autopilotMode == 'helicopter' and autopilotPhase == 'holding' then
+                        local resumeDistance = math.max(arrivalRadius * 2.0, arrivalRadius + 10.0)
+
+                        if distance > resumeDistance then
+                            autopilotPhase = 'enroute'
+                            phaseChanged = true
+                            issueAutopilotTask()
+                        else
+                            local refreshMs = math.max(500, math.floor(tonumber(modeConfig.HoldRefreshMs) or 2500))
+
+                            if GetGameTimer() - autopilotLastTaskAt >= refreshMs then
+                                issueAutopilotTask()
+                            end
+                        end
+                    end
+
+                    if not cancelReason
+                        and autopilotMode == 'helicopter'
+                        and autopilotBehavior == 'waypoint'
+                        and not applyHelicopterWaypointControl(vehicle, modeConfig, distance)
+                    then
+                        cancelReason = 'navigation_failed'
+                    end
+
+                    if phaseChanged and not cancelReason then
+                        emitVehicleAction('autopilot', vehicle, {
+                            active = true,
+                            aircraftType = autopilotMode,
+                            mode = autopilotBehavior,
+                            phase = autopilotPhase,
+                            targetAltitude = autopilotMode == 'plane' and autopilotPlaneHoldAltitude > 0.0
+                                and autopilotPlaneHoldAltitude
+                                or autopilotTarget.z,
+                            targetClearance = autopilotMode == 'helicopter' and autopilotFlightHeight or nil,
+                            targetMph = math.floor(autopilotTargetSpeed * MPH_PER_MPS + 0.5),
+                            source = 'touchscreen'
+                        })
+
+                        if uiOpen then
+                            sendVehicleState()
+                        end
+                    end
+                end
+            end
+
+            if cancelReason then
+                local notifyHoverTakeover = cancelReason == 'manual_input'
+                    and autopilotBehavior == 'hover'
+
+                stopAutopilot(cancelReason, true)
+
+                if notifyHoverTakeover then
+                    notify(L(
+                        'notifications.hoverReleasedByInput',
+                        nil,
+                        'Hover disengaged because pilot input was detected.'
+                    ), 'warning')
+                end
 
                 if uiOpen then
                     sendVehicleState()
@@ -2781,6 +4775,10 @@ AddEventHandler('onResourceStop', function(resourceName)
 
     if cruiseVehicle ~= 0 then
         stopCruiseControl('resource_stop', false)
+    end
+
+    if autopilotVehicle ~= 0 then
+        stopAutopilot('resource_stop', false)
     end
 
     if uiOpen or fobOpen then

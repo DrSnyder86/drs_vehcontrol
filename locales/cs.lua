@@ -57,6 +57,11 @@ Locales.cs = {
             interiorLight = 'Vnitřní světlo',
             cruiseSet = 'Nastavit tempomat',
             cruiseActive = 'Tempomat {speed}',
+            autopilotStart = 'Spustit autopilota',
+            autopilotEnRoute = 'Autopilot na trase',
+            autopilotHolding = 'Autopilot vyčkává',
+            hoverStart = 'Spustit visení',
+            hoverActive = 'Visení aktivní',
             closeAll = 'Zavřít vše',
             allDown = 'Vše dolů',
             allUp = 'Vše nahoru',
@@ -107,8 +112,14 @@ Locales.cs = {
         seatOccupied = 'Toto sedadlo je obsazené.',
         cannotAnchorHere = 'Zde nelze zakotvit.',
         anchorTooFast = 'Před spuštěním kotvy zpomalte pod {speed} MPH.',
+        anchorMoveBlocked = 'Před pokusem o pohyb s lodí zvedněte kotvu.',
         cruiseUnavailable = 'Tempomat lze použít pouze při jízdě vpřed se spuštěným motorem.',
-        cruiseSpeedRange = 'Tempomat je dostupný mezi {min} a {max} MPH.'
+        cruiseSpeedRange = 'Tempomat je dostupný mezi {min} a {max} MPH.',
+        autopilotNoWaypoint = 'Před spuštěním autopilota nastavte bod na mapě.',
+        autopilotUnavailable = 'Autopilot je dostupný pouze za letu, na místě pilota a se spuštěným motorem.',
+        autopilotWaypointTooClose = 'Zvolte bod na mapě vzdálený alespoň {distance} metrů.',
+        autopilotPlaneTooSlow = 'Před spuštěním autopilota letadla dosáhněte rychlosti alespoň {speed} MPH.',
+        hoverReleasedByInput = 'Režim visení byl vypnut po zjištění zásahu pilota.'
     },
 
     fobMessages = {

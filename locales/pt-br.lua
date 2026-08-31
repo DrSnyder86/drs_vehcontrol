@@ -57,6 +57,11 @@ Locales['pt-br'] = {
             interiorLight = 'Luz interna',
             cruiseSet = 'Definir piloto',
             cruiseActive = 'Piloto {speed}',
+            autopilotStart = 'Iniciar piloto auto',
+            autopilotEnRoute = 'Piloto auto em rota',
+            autopilotHolding = 'Piloto auto em espera',
+            hoverStart = 'Iniciar voo pairado',
+            hoverActive = 'Voo pairado',
             closeAll = 'Fechar tudo',
             allDown = 'Baixar tudo',
             allUp = 'Subir tudo',
@@ -107,8 +112,14 @@ Locales['pt-br'] = {
         seatOccupied = 'Esse banco está ocupado.',
         cannotAnchorHere = 'Não é possível ancorar aqui.',
         anchorTooFast = 'Reduza para menos de {speed} MPH antes de baixar a âncora.',
+        anchorMoveBlocked = 'Recolha a âncora antes de tentar mover o barco.',
         cruiseUnavailable = 'O piloto automático só está disponível ao dirigir para frente com o motor ligado.',
-        cruiseSpeedRange = 'O piloto automático está disponível entre {min} e {max} MPH.'
+        cruiseSpeedRange = 'O piloto automático está disponível entre {min} e {max} MPH.',
+        autopilotNoWaypoint = 'Defina um destino no mapa antes de iniciar o piloto automático.',
+        autopilotUnavailable = 'Para usar o piloto automático, você precisa estar em voo, no assento do piloto e com o motor ligado.',
+        autopilotWaypointTooClose = 'Escolha um destino a pelo menos {distance} metros de distância.',
+        autopilotPlaneTooSlow = 'Atinja pelo menos {speed} MPH antes de iniciar o piloto automático do avião.',
+        hoverReleasedByInput = 'O modo de pairar foi desativado ao detectar uma ação do piloto.'
     },
 
     fobMessages = {

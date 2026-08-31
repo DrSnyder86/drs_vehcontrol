@@ -1077,6 +1077,10 @@ button {
     content: none;
 }
 
+.key-fob.case-default {
+    --fob-case-padding: 18px 40px 18px;
+}
+
 .fob-brand,
 .fob-screen,
 .fob-actions,
@@ -1151,13 +1155,19 @@ button {
 .key-fob.case-moto {
     --fob-frame-image: url("img/fob_frames/fob_moto.png");
     --fob-frame-accent-mask: url("img/fob_frames/fob_moto_accent.png");
-    --fob-case-padding: 18px 53px 18px;
+    --fob-case-padding: 18px 42px 18px;
     --fob-action-height: 50px;
     --fob-tool-height: 38px;
+    --fob-back-margin: 18px;
     --fob-shell-radius: 0;
     --fob-shell-clip: none;
     --fob-screen-radius: 12px;
     --fob-action-radius: 12px;
+}
+
+.key-fob.case-moto .fob-actions {
+    gap: 6px;
+    margin-top: 9px;
 }
 
 .key-fob.case-aero {
@@ -1694,6 +1704,10 @@ button {
         margin-bottom: 5px;
     }
 
+    .key-fob.case-default {
+        --fob-case-padding: 16px 37px 16px;
+    }
+
     .key-fob.case-performance {
         --fob-case-padding: 16px 37px 16px;
     }
@@ -1715,7 +1729,7 @@ button {
     }
 
     .key-fob.case-moto {
-        --fob-case-padding: 16px 49px 16px;
+        --fob-case-padding: 16px 34px 16px;
     }
 
     .key-fob.case-aero {

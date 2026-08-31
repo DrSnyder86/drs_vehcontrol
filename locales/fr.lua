@@ -57,6 +57,11 @@ Locales.fr = {
             interiorLight = 'Éclairage intérieur',
             cruiseSet = 'Régler régulateur',
             cruiseActive = 'Régulateur {speed}',
+            autopilotStart = 'Activer le pilote auto',
+            autopilotEnRoute = 'Pilote auto en route',
+            autopilotHolding = 'Pilote auto en attente',
+            hoverStart = 'Activer le vol stationnaire',
+            hoverActive = 'Vol stationnaire',
             closeAll = 'Tout fermer',
             allDown = 'Tout baisser',
             allUp = 'Tout monter',
@@ -107,8 +112,14 @@ Locales.fr = {
         seatOccupied = 'Ce siège est occupé.',
         cannotAnchorHere = "Impossible de jeter l'ancre ici.",
         anchorTooFast = "Ralentissez sous {speed} MPH avant de jeter l'ancre.",
+        anchorMoveBlocked = "Relevez l'ancre avant d'essayer de déplacer le bateau.",
         cruiseUnavailable = 'Le régulateur est disponible uniquement en marche avant avec le moteur allumé.',
-        cruiseSpeedRange = 'Le régulateur est disponible entre {min} et {max} MPH.'
+        cruiseSpeedRange = 'Le régulateur est disponible entre {min} et {max} MPH.',
+        autopilotNoWaypoint = "Placez un point de passage sur la carte avant d'activer le pilote automatique.",
+        autopilotUnavailable = 'Pour utiliser le pilote automatique, vous devez être en vol, au poste de pilotage et moteur allumé.',
+        autopilotWaypointTooClose = 'Choisissez un point de passage situé à au moins {distance} mètres.',
+        autopilotPlaneTooSlow = "Atteignez au moins {speed} MPH avant d'activer le pilote automatique de l'avion.",
+        hoverReleasedByInput = 'Le vol stationnaire a été désactivé après la détection d’une commande du pilote.'
     },
 
     fobMessages = {

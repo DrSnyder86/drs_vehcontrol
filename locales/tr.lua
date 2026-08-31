@@ -57,6 +57,11 @@ Locales.tr = {
             interiorLight = 'İç aydınlatma',
             cruiseSet = 'Hızı sabitle',
             cruiseActive = 'Sabit {speed}',
+            autopilotStart = 'Otomatik pilot başlat',
+            autopilotEnRoute = 'Otomatik pilot rotada',
+            autopilotHolding = 'Otomatik pilot beklemede',
+            hoverStart = 'Havada asılı kal',
+            hoverActive = 'Havada asılı',
             closeAll = 'Tümünü kapat',
             allDown = 'Hepsini indir',
             allUp = 'Hepsini kaldır',
@@ -107,8 +112,14 @@ Locales.tr = {
         seatOccupied = 'Bu koltuk dolu.',
         cannotAnchorHere = 'Burada demirlenemez.',
         anchorTooFast = 'Çapayı indirmeden önce {speed} MPH hızın altına düşün.',
+        anchorMoveBlocked = 'Tekneyi hareket ettirmeye çalışmadan önce çapayı kaldırın.',
         cruiseUnavailable = 'Hız sabitleme yalnızca motor çalışırken ileri sürüşte kullanılabilir.',
-        cruiseSpeedRange = 'Hız sabitleme {min} ile {max} MPH arasında kullanılabilir.'
+        cruiseSpeedRange = 'Hız sabitleme {min} ile {max} MPH arasında kullanılabilir.',
+        autopilotNoWaypoint = 'Otomatik pilotu başlatmadan önce haritada bir rota noktası belirleyin.',
+        autopilotUnavailable = 'Otomatik pilot yalnızca havadayken, pilot koltuğunda ve motor çalışırken kullanılabilir.',
+        autopilotWaypointTooClose = 'En az {distance} metre uzakta bir rota noktası seçin.',
+        autopilotPlaneTooSlow = 'Uçak otomatik pilotunu başlatmadan önce en az {speed} MPH hıza ulaşın.',
+        hoverReleasedByInput = 'Pilot girişi algılandığı için havada sabit kalma modu devre dışı bırakıldı.'
     },
 
     fobMessages = {

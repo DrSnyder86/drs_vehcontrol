@@ -96,6 +96,8 @@ const icons = {
     trailer: '<path d="M3 14h12v5H3z"/><path d="M15 16h3l3-3"/><circle cx="6" cy="20" r="1.5"/><circle cx="12" cy="20" r="1.5"/><path d="M5 14V9h6v5"/>',
     anchor: '<circle cx="12" cy="5" r="2"/><path d="M12 7v12M5 11h14"/><path d="M4 15a8 8 0 0 0 16 0"/><path d="m4 15-2 3M20 15l2 3"/>',
     landingGear: '<path d="M12 3v9M6 7l6 4 6-4"/><path d="m9 11-3 6M15 11l3 6"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/>',
+    autopilot: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.3 4.7-4.7 2.3 2.3-4.7z"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/>',
+    hover: '<path d="M3 7h18M7 7l5-4 5 4"/><path d="M12 7v6"/><path d="M8 13h8l-2 4h-4z"/><path d="M5 20h14"/>',
     roof: '<path d="M4 14h16l-2 5H6z"/><path d="M7 14c2-5 8-5 10 0"/><path d="M8 10 6 6M16 10l2-4"/>',
     cruise: '<path d="M5 18a8 8 0 1 1 14 0"/><path d="m12 12 4-3"/><path d="M8 18h8"/><path d="M7 8 5 6M17 8l2-2M12 6V3"/>',
     extra: '<path d="M12 3v18M3 12h18"/><path d="M5 5h4v4H5zM15 5h4v4h-4zM5 15h4v4H5zM15 15h4v4h-4z"/>',
@@ -870,7 +872,21 @@ function renderVehicle() {
         }));
     }
 
-    if (enabled('cruise') && state.cruise?.supported) {
+    if (enabled('autopilot') && state.autopilot?.supported) {
+        const waypointActive = state.autopilot.active && state.autopilot.mode === 'waypoint';
+        const autopilotLabel = !waypointActive
+            ? t('ui.controls.autopilotStart', 'Start Autopilot')
+            : (state.autopilot.phase === 'holding' || state.autopilot.phase === 'orbit')
+                ? t('ui.controls.autopilotHolding', 'Autopilot Holding')
+                : t('ui.controls.autopilotEnRoute', 'Autopilot En Route');
+
+        buttons.push(control({
+            label: autopilotLabel,
+            icon: 'autopilot',
+            active: waypointActive,
+            onClick: () => post('toggleAutopilot')
+        }));
+    } else if (enabled('cruise') && state.cruise?.supported) {
         const cruiseSpeed = state.cruise.targetMph || 0;
         buttons.push(control({
             label: state.cruise.active
@@ -992,6 +1008,21 @@ function renderSeats() {
 
 function renderUtility() {
     const buttons = [];
+
+    if (enabled('autopilot')
+        && state.autopilot?.supported
+        && state.autopilot.aircraftType === 'helicopter') {
+        const hoverActive = state.autopilot.active && state.autopilot.mode === 'hover';
+
+        buttons.push(control({
+            label: hoverActive
+                ? t('ui.controls.hoverActive', 'Hovering')
+                : t('ui.controls.hoverStart', 'Start Hover'),
+            icon: 'hover',
+            active: hoverActive,
+            onClick: () => post('toggleHover')
+        }));
+    }
 
     if (enabled('anchor') && state.anchor && state.anchor.supported) {
         buttons.push(control({

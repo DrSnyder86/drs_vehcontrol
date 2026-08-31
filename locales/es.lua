@@ -57,6 +57,11 @@ Locales.es = {
             interiorLight = 'Luz interior',
             cruiseSet = 'Fijar crucero',
             cruiseActive = 'Crucero {speed}',
+            autopilotStart = 'Iniciar piloto automático',
+            autopilotEnRoute = 'Piloto automático en ruta',
+            autopilotHolding = 'Piloto automático en espera',
+            hoverStart = 'Iniciar vuelo estacionario',
+            hoverActive = 'Vuelo estacionario',
             closeAll = 'Cerrar todo',
             allDown = 'Bajar todo',
             allUp = 'Subir todo',
@@ -107,8 +112,14 @@ Locales.es = {
         seatOccupied = 'Ese asiento está ocupado.',
         cannotAnchorHere = 'No se puede anclar aquí.',
         anchorTooFast = 'Reduce la velocidad por debajo de {speed} MPH antes de bajar el ancla.',
+        anchorMoveBlocked = 'Levanta el ancla antes de intentar mover el barco.',
         cruiseUnavailable = 'El control de crucero solo está disponible al conducir hacia delante con el motor encendido.',
-        cruiseSpeedRange = 'El control de crucero está disponible entre {min} y {max} MPH.'
+        cruiseSpeedRange = 'El control de crucero está disponible entre {min} y {max} MPH.',
+        autopilotNoWaypoint = 'Establece un punto de ruta en el mapa antes de iniciar el piloto automático.',
+        autopilotUnavailable = 'Para usar el piloto automático debes estar en vuelo, en el asiento del piloto y con el motor encendido.',
+        autopilotWaypointTooClose = 'Elige un punto de ruta a al menos {distance} metros.',
+        autopilotPlaneTooSlow = 'Alcanza al menos {speed} MPH antes de iniciar el piloto automático del avión.',
+        hoverReleasedByInput = 'El vuelo estacionario se desactivó al detectar una entrada del piloto.'
     },
 
     fobMessages = {
